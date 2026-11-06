@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"sort"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"vlanmesh/internal/config"
 	"vlanmesh/internal/metrics"
 	"vlanmesh/internal/model"
+	"vlanmesh/internal/netcfg"
 	"vlanmesh/internal/probe"
 	"vlanmesh/internal/store"
 )
@@ -22,11 +24,13 @@ import (
 type Monitor struct {
 	cfg    *config.Config
 	st     *store.Store
-	issues []string
 	client *http.Client
 
 	mu            sync.RWMutex
 	cells         map[model.Key]model.Cell
+	legs          map[string]netcfg.Leg
+	appliedSig    string
+	issues        []string
 	lastSweep     time.Time
 	sweeps        uint64
 	prevStatus    map[model.Key]model.Status
@@ -42,6 +46,7 @@ func New(cfg *config.Config, st *store.Store, issues []string) *Monitor {
 		issues:        issues,
 		client:        &http.Client{Timeout: 5 * time.Second},
 		cells:         map[model.Key]model.Cell{},
+		legs:          map[string]netcfg.Leg{},
 		prevStatus:    map[model.Key]model.Status{},
 		prevViolation: map[model.Key]string{},
 	}
@@ -86,6 +91,7 @@ func (m *Monitor) Run(ctx context.Context) {
 
 type job struct {
 	src     config.VLAN
+	leg     *netcfg.Leg
 	dstName string
 	dstIP   string
 	control bool
@@ -103,7 +109,8 @@ func (m *Monitor) Sweep(ctx context.Context) {
 	}
 
 	started := time.Now()
-	jobs := m.buildJobs()
+	legs, issues := m.resolveAndApply()
+	jobs := m.buildJobs(legs)
 
 	results := make([]model.Result, len(jobs))
 	sem := make(chan struct{}, m.cfg.Concurrency)
@@ -120,15 +127,21 @@ func (m *Monitor) Sweep(ctx context.Context) {
 			switch {
 			case m.cfg.Demo:
 				r = m.demoResult(j)
+			case j.leg == nil:
+				r = model.Result{
+					Status: model.StatusError,
+					Err:    "no IPv4 address on " + j.src.Iface + " (DHCP not ready?)",
+					DstIP:  j.dstIP,
+				}
 			case j.remote != nil:
-				r = m.probeRemote(j.src, j.remote)
+				r = m.probeRemote(*j.leg, j.remote)
 			default:
-				r = probe.Probe(j.src.SrcIP(), j.src.Iface, j.dstIP, m.cfg.Count, m.cfg.Timeout.D())
+				r = probe.Probe(j.leg.Iface, j.dstIP, m.cfg.Count, m.cfg.Timeout.D())
 			}
 			r.Src = j.src.Name
 			r.Dst = j.dstName
-			if r.SrcIP == "" {
-				r.SrcIP = j.src.SrcIP()
+			if r.SrcIP == "" && j.leg != nil {
+				r.SrcIP = j.leg.Src()
 			}
 			if r.DstIP == "" {
 				r.DstIP = j.dstIP
@@ -180,27 +193,105 @@ func (m *Monitor) Sweep(ctx context.Context) {
 	m.updateMetrics(cells, now.Sub(started))
 	m.notify(changes, now)
 
-	slog.Info("sweep done", "cells", len(cells), "duration", time.Since(started).Round(time.Millisecond))
+	slog.Info("sweep done", "cells", len(cells), "duration", time.Since(started).Round(time.Millisecond), "issues", len(issues))
 }
 
-func (m *Monitor) buildJobs() []job {
+// resolveAndApply re-reads the current IPv4 address of every VLAN interface and
+// (re)installs the policy routing when an interface or subnet changed.
+func (m *Monitor) resolveAndApply() (map[string]netcfg.Leg, []string) {
+	var (
+		legs   map[string]netcfg.Leg
+		issues []string
+		legsSl []netcfg.Leg
+	)
+	if m.cfg.Demo {
+		legs = demoLegs(m.cfg)
+	} else {
+		legsSl, issues = netcfg.Resolve(m.cfg)
+		legs = make(map[string]netcfg.Leg, len(legsSl))
+		for _, l := range legsSl {
+			legs[l.Name] = l
+		}
+	}
+
+	// The routing setup only depends on iface/subnet/gateway, not on the host
+	// address inside the subnet.
+	var sig string
+	for _, v := range m.cfg.VLANS {
+		if l, ok := legs[v.Name]; ok {
+			sig += l.Name + "|" + l.Iface + "|" + l.Subnet.String() + "|" + l.Gateway + ";"
+		} else {
+			sig += v.Name + "|missing;"
+		}
+	}
+
+	m.mu.RLock()
+	changed := sig != m.appliedSig
+	m.mu.RUnlock()
+
+	if changed && !m.cfg.Demo {
+		issues = append(issues, netcfg.Apply(legsSl)...)
+	}
+
+	m.mu.Lock()
+	m.legs = legs
+	m.issues = issues
+	if changed {
+		m.appliedSig = sig
+	}
+	m.mu.Unlock()
+
+	return legs, issues
+}
+
+func demoLegs(cfg *config.Config) map[string]netcfg.Leg {
+	legs := make(map[string]netcfg.Leg, len(cfg.VLANS))
+	for i, v := range cfg.VLANS {
+		gw := net.ParseIP(v.Gateway).To4()
+		if gw == nil {
+			continue
+		}
+		ip := net.IPv4(gw[0], gw[1], gw[2], 5).To4()
+		mask := net.CIDRMask(24, 32)
+		subnet := &net.IPNet{IP: ip.Mask(mask), Mask: mask}
+		legs[v.Name] = netcfg.Leg{
+			Name:    v.Name,
+			Iface:   v.Iface,
+			Gateway: v.Gateway,
+			IP:      ip,
+			Prefix:  24,
+			Subnet:  subnet,
+			Table:   netcfg.Table(i),
+			Pref:    netcfg.Pref(i),
+		}
+	}
+	return legs
+}
+
+func (m *Monitor) buildJobs(legs map[string]netcfg.Leg) []job {
 	vlans := m.cfg.VLANS
 	total := len(vlans)*len(vlans) + len(vlans)*len(m.cfg.Remotes)
 	jobs := make([]job, 0, total)
 	for i := range vlans {
 		src := vlans[i]
+		leg, hasLeg := legs[src.Name]
+		var legPtr *netcfg.Leg
+		if hasLeg {
+			legCopy := leg
+			legPtr = &legCopy
+		}
 		// Control probe: own gateway, on-link, never crosses the firewall.
-		jobs = append(jobs, job{src: src, dstName: src.Name, dstIP: src.Gateway, control: true})
+		jobs = append(jobs, job{src: src, leg: legPtr, dstName: src.Name, dstIP: src.Gateway, control: true})
 		for j := range vlans {
 			if i == j {
 				continue
 			}
 			dst := vlans[j]
-			jobs = append(jobs, job{src: src, dstName: dst.Name, dstIP: m.cfg.Targets.For(dst)})
+			jobs = append(jobs, job{src: src, leg: legPtr, dstName: dst.Name, dstIP: m.cfg.Targets.For(dst)})
 		}
 		for r := range m.cfg.Remotes {
 			remote := &m.cfg.Remotes[r]
-			jobs = append(jobs, job{src: src, dstName: remote.Name, remote: remote})
+			jobs = append(jobs, job{src: src, leg: legPtr, dstName: remote.Name, remote: remote})
 		}
 	}
 	return jobs
@@ -208,12 +299,12 @@ func (m *Monitor) buildJobs() []job {
 
 // probeRemote checks reachability of one remote destination from one VLAN.
 // Reachable if at least one target answers; blocked if none does.
-func (m *Monitor) probeRemote(src config.VLAN, remote *config.Remote) model.Result {
+func (m *Monitor) probeRemote(leg netcfg.Leg, remote *config.Remote) model.Result {
 	targets := remote.Targets
 	agg := model.Result{
-		Src:     src.Name,
+		Src:     leg.Name,
 		Dst:     remote.Name,
-		SrcIP:   src.SrcIP(),
+		SrcIP:   leg.Src(),
 		Started: time.Now(),
 	}
 	if len(targets) == 0 {
@@ -238,7 +329,7 @@ func (m *Monitor) probeRemote(src config.VLAN, remote *config.Remote) model.Resu
 	)
 
 	for _, target := range targets {
-		r := probe.Probe(src.SrcIP(), src.Iface, target, m.cfg.Count, m.cfg.Timeout.D())
+		r := probe.Probe(leg.Iface, target, m.cfg.Count, m.cfg.Timeout.D())
 		agg.Sent += r.Sent
 		agg.Recv += r.Recv
 		if r.Status == model.StatusError {
@@ -471,11 +562,15 @@ func (m *Monitor) Snapshot() model.Snapshot {
 
 	vlans := make([]model.VLANInfo, 0, len(m.cfg.VLANS))
 	for _, v := range m.cfg.VLANS {
+		src := "no IPv4"
+		if leg, ok := m.legs[v.Name]; ok {
+			src = leg.Src()
+		}
 		vlans = append(vlans, model.VLANInfo{
 			Name:    v.Name,
 			VLANID:  v.VLANID,
 			Iface:   v.Iface,
-			Src:     v.Src,
+			Src:     src,
 			Gateway: v.Gateway,
 			Target:  m.cfg.Targets.For(v),
 		})
@@ -505,7 +600,7 @@ func (m *Monitor) Snapshot() model.Snapshot {
 		Policy:      pol,
 		Cells:       cells,
 		Summary:     sum,
-		Issues:      m.issues,
+		Issues:      append([]string(nil), m.issues...),
 	}
 }
 
@@ -514,7 +609,7 @@ func (m *Monitor) Snapshot() model.Snapshot {
 func (m *Monitor) demoResult(j job) model.Result {
 	r := model.Result{
 		Started: time.Now(),
-		SrcIP:   j.src.SrcIP(),
+		SrcIP:   j.leg.Src(),
 		DstIP:   j.dstIP,
 		Sent:    m.cfg.Count,
 	}

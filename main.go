@@ -50,10 +50,10 @@ func main() {
 	}
 
 	if *check {
-		slog.Info("config OK", "vlans", len(cfg.VLANS), "targets", cfg.Targets.Mode, "demo", cfg.Demo)
+		slog.Info("config OK", "vlans", len(cfg.VLANS), "remotes", len(cfg.Remotes), "demo", cfg.Demo)
 		for _, v := range cfg.VLANS {
-			fmt.Printf("  %-10s iface=%-6s src=%-20s gw=%-16s target=%s\n",
-				v.Name, v.Iface, v.Src, v.Gateway, cfg.Targets.For(v))
+			fmt.Printf("  %-10s iface=%-6s gateway=%-16s target=%s\n",
+				v.Name, v.Iface, v.Gateway, cfg.Targets.For(v))
 		}
 		if len(cfg.Remotes) > 0 {
 			fmt.Printf("remotes: %d\n", len(cfg.Remotes))
@@ -61,7 +61,15 @@ func main() {
 				fmt.Printf("  %-10s label=%-16s targets=%v\n", r.Name, r.DisplayName(), r.Targets)
 			}
 		}
-		issues := netcfg.Diagnose(cfg)
+		if cfg.Demo {
+			fmt.Println("demo mode: network checks skipped")
+			return
+		}
+		legs, issues := netcfg.Resolve(cfg)
+		for _, l := range legs {
+			fmt.Printf("  resolved   %-10s iface=%-6s ip=%-18s gateway=%s\n", l.Name, l.Iface, l.Src(), l.Gateway)
+		}
+		issues = append(issues, netcfg.Diagnose(legs)...)
 		if len(issues) == 0 {
 			fmt.Println("network: OK")
 			return
@@ -73,21 +81,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	var issues []string
-	if !cfg.Demo {
-		issues = netcfg.Apply(cfg)
-		for _, i := range issues {
-			slog.Warn("network", "issue", i)
-		}
-	}
-
 	st, err := store.Open(cfg.DB)
 	if err != nil {
 		fatal("open database", err)
 	}
 	defer st.Close()
 
-	mon := monitor.New(cfg, st, issues)
+	mon := monitor.New(cfg, st, nil)
 	mon.Prime()
 
 	if *once {

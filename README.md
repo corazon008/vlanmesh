@@ -9,12 +9,12 @@ et publie le résultat dans un dashboard + `/metrics` Prometheus.
 ```
 ┌──────────────── LXC vlanmesh (Docker host-net) ────────────────┐
 │ eth0 mgmt        UI web /metrics / SSH                         │
-│ eth1 vlan10  192.168.10.5/24 ┐                                 │
+│ eth1 vlan10  (DHCP)          ┐                                 │
 │ eth2 vlan20  192.168.20.5/24 ├ une table de routage par VLAN    │
 │ ...                          ┘                                 │
 │   prober Go  →  SQLite  →  matrice + /metrics                  │
 └──────────────┬─────────────────────────────────────────────────┘
-               │ src 192.168.i.5 → dst 192.168.j.254
+               │ sortie forcée par eth_i → dst 192.168.j.254
                │ sortie forcée par eth_i (policy routing)
         ┌──────▼───────┐
         │ OPNsense     │  .254 de chaque VLAN
@@ -61,17 +61,21 @@ Le LXC a une IP dans chaque VLAN. Sans rien faire, le kernel voit tous les
 subnets en direct : un ping vers `192.168.20.254` sortirait par `eth2` et
 **contournerait OPNsense**. Le prober :
 
-1. ouvre un socket ICMP brut lié à l'IP source,
-2. applique `SO_BINDTODEVICE eth_i`,
-3. s'appuie sur une table de routage par VLAN (`ip rule` + `ip route`).
+1. ouvre un socket ICMP brut sur `0.0.0.0`,
+2. applique `SO_BINDTODEVICE eth_i` (le noyau choisit l'IP source courante),
+3. s'appuie sur une table de routage par VLAN (`ip rule oif` + `ip route`).
 
-L'app pose elle-même ces règles au démarrage (idempotent) :
+L'app pose elle-même ces règles (idempotent) :
 
 ```
-ip route replace 192.168.10.0/24 dev eth1 src 192.168.10.5 table 100
+ip route replace 192.168.10.0/24 dev eth1 table 100
 ip route replace default via 192.168.10.254 dev eth1 table 100
-ip rule add from 192.168.10.5 lookup 100 pref 1000
+ip rule add oif eth1 lookup 100 pref 1000
 ```
+
+La règle est indexée sur l'**interface de sortie**, pas sur l'IP source : un
+changement de bail DHCP dans le même /24 ne casse rien. L'IP source est relue
+sur l'interface à chaque sweep ; il n'y a pas de champ `src` dans le YAML.
 
 `rp_filter` doit être en mode **loose** (`2`) : la réponse revient par `eth_i`
 alors que sa route inverse est sur un autre VLAN. En strict (`1`), tout est
@@ -99,20 +103,22 @@ systemctl restart docker
 
 ### 2. Interfaces
 
-Une patte par VLAN. Exemple `/etc/pve/lxc/<id>.conf` :
+Une patte par VLAN. Les IP data peuvent être en **DHCP** : l'app lit l'IP
+courante à chaque sweep. Exemple `/etc/pve/lxc/<id>.conf` :
 
 ```
 net0: name=eth0,bridge=vmbr0,tag=99,ip=192.168.99.5/24,gw=192.168.99.254,hwaddr=AA:BB:CC:00:00:01
-net1: name=eth1,bridge=vmbr0,tag=10,ip=192.168.10.5/24,hwaddr=AA:BB:CC:00:00:02
-net2: name=eth2,bridge=vmbr0,tag=20,ip=192.168.20.5/24,hwaddr=AA:BB:CC:00:00:03
+net1: name=eth1,bridge=vmbr0,tag=10,ip=dhcp,hwaddr=AA:BB:CC:00:00:02
+net2: name=eth2,bridge=vmbr0,tag=20,ip=dhcp,hwaddr=AA:BB:CC:00:00:03
 ...
 ```
 
-- **`gw=` uniquement sur `net0`** (management). Pas de passerelle par défaut
-  sur les pattes data : c'est l'app qui gère le routage par VLAN.
-- Chaque patte doit être en **/24** (ou le masque réel du VLAN), jamais en /16,
-  sinon les routes se chevauchent.
+- **`gw=` uniquement sur `net0`** (management). Les pattes data n'ont pas besoin
+  de passerelle par défaut : c'est l'app qui gère le routage par VLAN.
+- Une IP statique par patte fonctionne aussi, mais n'est pas nécessaire.
 - `tag=` = le VLAN de la patte.
+- Le bail DHCP doit rester dans le même sous-réseau (cas normal) ; s'il change
+  de sous-réseau, l'app le détecte et réapplique les routes.
 
 ### 3. `rp_filter`
 
@@ -164,7 +170,7 @@ retention: 720h
 demo: false
 
 vlans:
-  - {name: vlan10, vlan_id: 10, iface: eth1, src: 192.168.10.5/24, gateway: 192.168.10.254}
+  - {name: vlan10, vlan_id: 10, iface: eth1, gateway: 192.168.10.254}
 
 targets:
   mode: gateway        # gateway | hosts
@@ -324,8 +330,9 @@ maison.
 | Symptôme | Cause probable |
 |---|---|
 | `need CAP_NET_RAW` | `cap_add: NET_RAW` manquant |
-| `check policy routing` | `ip rule`/`ip route` absents, ou IP source absente de l'iface |
-| Toutes les cellules `UNKNOWN` | sonde de contrôle `i→i` KO : mauvaise IP/passerelle/interface |
+| `check policy routing` | `ip rule oif`/`ip route` absents ; lancer `-check` |
+| `no IPv4 address on ethX yet` | bail DHCP pas encore reçu ; retry auto au sweep suivant |
+| Toutes les cellules `UNKNOWN` | sonde de contrôle `i→i` KO : mauvaise passerelle/interface |
 | `interface ethX not found` | patte absente dans la config Proxmox |
 | Tout `BLOCKED` alors que le ping manuel passe | `rp_filter=1`, ou trafic sortant par le mauvais VLAN |
 | Docker ne démarre pas | overlay2 sur LXC unprivileged → `storage-driver: vfs` |

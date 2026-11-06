@@ -18,14 +18,16 @@ import (
 
 const sendSpacing = 100 * time.Millisecond
 
-// Probe sends count ICMP echoes from srcIP (bound to iface) to dstIP and
-// returns a classified result.
+// Probe sends count ICMP echoes to dstIP through iface and returns a
+// classified result.
 //
-// SO_BINDTODEVICE is mandatory: without it the kernel would route the packet
-// straight out of the destination VLAN's leg and bypass the firewall.
-func Probe(srcIP, iface, dstIP string, count int, timeout time.Duration) model.Result {
+// The source address is deliberately not bound: the kernel picks the current
+// address of the interface, so a DHCP lease change does not break the probe.
+// SO_BINDTODEVICE is mandatory: it selects the interface (and therefore the
+// per-VLAN policy routing table) so the packet traverses the firewall instead
+// of taking the destination VLAN's directly connected route.
+func Probe(iface, dstIP string, count int, timeout time.Duration) model.Result {
 	res := model.Result{
-		SrcIP:   srcIP,
 		DstIP:   dstIP,
 		Started: time.Now(),
 	}
@@ -40,13 +42,10 @@ func Probe(srcIP, iface, dstIP string, count int, timeout time.Duration) model.R
 	if dst == nil {
 		return fail(fmt.Errorf("invalid destination %q", dstIP))
 	}
-	if net.ParseIP(srcIP) == nil {
-		return fail(fmt.Errorf("invalid source %q", srcIP))
-	}
 
-	conn, err := net.ListenPacket("ip4:icmp", srcIP)
+	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
 	if err != nil {
-		return fail(fmt.Errorf("raw icmp socket on %s: %w (need CAP_NET_RAW)", srcIP, err))
+		return fail(fmt.Errorf("raw icmp socket: %w (need CAP_NET_RAW)", err))
 	}
 	defer conn.Close()
 

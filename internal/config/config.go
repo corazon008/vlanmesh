@@ -56,24 +56,7 @@ type VLAN struct {
 	Name    string `yaml:"name" json:"name"`
 	VLANID  int    `yaml:"vlan_id" json:"vlan_id"`
 	Iface   string `yaml:"iface" json:"iface"`
-	Src     string `yaml:"src" json:"src"`
 	Gateway string `yaml:"gateway" json:"gateway"`
-}
-
-func (v VLAN) SrcIP() string {
-	ip, _, err := net.ParseCIDR(v.Src)
-	if err != nil {
-		return ""
-	}
-	return ip.String()
-}
-
-func (v VLAN) Subnet() string {
-	_, n, err := net.ParseCIDR(v.Src)
-	if err != nil {
-		return ""
-	}
-	return n.String()
 }
 
 type Targets struct {
@@ -150,6 +133,9 @@ func Load(path string) (*Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		if strings.Contains(err.Error(), "internet") {
 			return nil, fmt.Errorf("parse %s: %w\n\n`internet:` n'existe plus : declare-le dans remotes, ex.\n  remotes:\n    - {name: internet, label: Internet, targets: [\"1.1.1.1\", \"8.8.8.8\"]}\net remplace `internet: deny` par une regle policy: {from: <vlan>, to: internet, action: deny}", path, err)
+		}
+		if strings.Contains(err.Error(), "src") {
+			return nil, fmt.Errorf("parse %s: %w\n\n`src` n'existe plus : l'IP source est resolue depuis l'interface a chaque sweep. Supprime le champ src de chaque VLAN (garde name, iface, gateway).", path, err)
 		}
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
@@ -238,25 +224,12 @@ func (c *Config) Validate() error {
 		if v.Iface == "" {
 			return fmt.Errorf("vlans[%d] (%s): iface is required", i, v.Name)
 		}
-		ip, n, err := net.ParseCIDR(v.Src)
-		if err != nil {
-			return fmt.Errorf("vlans[%d] (%s): invalid src %q: %w", i, v.Name, v.Src, err)
-		}
 		if v.Gateway == "" {
 			return fmt.Errorf("vlans[%d] (%s): gateway is required", i, v.Name)
 		}
 		gw := net.ParseIP(v.Gateway)
 		if gw == nil {
 			return fmt.Errorf("vlans[%d] (%s): invalid gateway %q", i, v.Name, v.Gateway)
-		}
-		if !n.Contains(gw) {
-			return fmt.Errorf("vlans[%d] (%s): gateway %s is outside %s", i, v.Name, v.Gateway, n)
-		}
-		if !n.Contains(ip) {
-			return fmt.Errorf("vlans[%d] (%s): src %s is outside %s", i, v.Name, v.Src, n)
-		}
-		if ones, _ := n.Mask.Size(); ones > 30 {
-			return fmt.Errorf("vlans[%d] (%s): src prefix must be <= /30", i, v.Name)
 		}
 	}
 

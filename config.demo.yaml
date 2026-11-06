@@ -12,14 +12,14 @@ retention: 24h
 demo: true
 
 vlans:
-  - {name: vlan10, vlan_id: 10, iface: eth1, src: 192.168.10.5/24, gateway: 192.168.10.254}
-  - {name: vlan20, vlan_id: 20, iface: eth2, src: 192.168.20.5/24, gateway: 192.168.20.254}
-  - {name: vlan30, vlan_id: 30, iface: eth3, src: 192.168.30.5/24, gateway: 192.168.30.254}
-  - {name: vlan40, vlan_id: 40, iface: eth4, src: 192.168.40.5/24, gateway: 192.168.40.254}
-  - {name: vlan50, vlan_id: 50, iface: eth5, src: 192.168.50.5/24, gateway: 192.168.50.254}
-  - {name: vlan60, vlan_id: 60, iface: eth6, src: 192.168.60.5/24, gateway: 192.168.60.254}
-  - {name: vlan70, vlan_id: 70, iface: eth7, src: 192.168.70.5/24, gateway: 192.168.70.254}
-  - {name: vlan80, vlan_id: 80, iface: eth8, src: 192.168.80.5/24, gateway: 192.168.80.254}
+  - {name: vlan10, vlan_id: 10, iface: eth1, gateway: 192.168.10.254}
+  - {name: vlan20, vlan_id: 20, iface: eth2, gateway: 192.168.20.254}
+  - {name: vlan30, vlan_id: 30, iface: eth3, gateway: 192.168.30.254}
+  - {name: vlan40, vlan_id: 40, iface: eth4, gateway: 192.168.40.254}
+  - {name: vlan50, vlan_id: 50, iface: eth5, gateway: 192.168.50.254}
+  - {name: vlan60, vlan_id: 60, iface: eth6, gateway: 192.168.60.254}
+  - {name: vlan70, vlan_id: 70, iface: eth7, gateway: 192.168.70.254}
+  - {name: vlan80, vlan_id: 80, iface: eth8, gateway: 192.168.80.254}
 
 targets:
   mode: gateway

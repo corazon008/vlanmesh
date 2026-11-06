@@ -19,9 +19,9 @@ func testConfig() *config.Config {
 		Concurrency: 4,
 		Demo:        true,
 		VLANS: []config.VLAN{
-			{Name: "vlan10", Iface: "eth1", Src: "192.168.10.5/24", Gateway: "192.168.10.254"},
-			{Name: "vlan20", Iface: "eth2", Src: "192.168.20.5/24", Gateway: "192.168.20.254"},
-			{Name: "vlan30", Iface: "eth3", Src: "192.168.30.5/24", Gateway: "192.168.30.254"},
+			{Name: "vlan10", Iface: "eth1", Gateway: "192.168.10.254"},
+			{Name: "vlan20", Iface: "eth2", Gateway: "192.168.20.254"},
+			{Name: "vlan30", Iface: "eth3", Gateway: "192.168.30.254"},
 		},
 		Targets: config.Targets{Mode: "gateway", Hosts: map[string]string{}},
 		Remotes: []config.Remote{

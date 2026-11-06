@@ -54,8 +54,8 @@ func validConfig() *Config {
 		Timeout:  Duration(1_000_000_000),
 		Count:    3,
 		VLANS: []VLAN{
-			{Name: "vlan10", Iface: "eth1", Src: "192.168.10.5/24", Gateway: "192.168.10.254"},
-			{Name: "vlan20", Iface: "eth2", Src: "192.168.20.5/24", Gateway: "192.168.20.254"},
+			{Name: "vlan10", Iface: "eth1", Gateway: "192.168.10.254"},
+			{Name: "vlan20", Iface: "eth2", Gateway: "192.168.20.254"},
 		},
 		Targets: Targets{Mode: "gateway"},
 		Policy:  Policy{Default: "allow"},
@@ -70,31 +70,12 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsBadCIDR(t *testing.T) {
+func TestValidateRejectsBadGateway(t *testing.T) {
 	c := validConfig()
 	c.applyDefaults()
-	c.VLANS[0].Src = "192.168.10.5"
+	c.VLANS[0].Gateway = "not-an-ip"
 	if err := c.Validate(); err == nil {
-		t.Fatal("expected error for missing prefix")
-	}
-}
-
-func TestValidateRejectsOverlapGateway(t *testing.T) {
-	c := validConfig()
-	c.applyDefaults()
-	c.VLANS[0].Gateway = "192.168.20.254"
-	if err := c.Validate(); err == nil {
-		t.Fatal("expected error for gateway outside subnet")
-	}
-}
-
-func TestVLANHelpers(t *testing.T) {
-	v := VLAN{Src: "192.168.10.5/24"}
-	if got := v.SrcIP(); got != "192.168.10.5" {
-		t.Errorf("SrcIP=%q", got)
-	}
-	if got := v.Subnet(); got != "192.168.10.0/24" {
-		t.Errorf("Subnet=%q", got)
+		t.Fatal("expected error for invalid gateway")
 	}
 }
 
@@ -175,6 +156,26 @@ policy: {default: allow}
 	}
 	if !strings.Contains(err.Error(), "internet") {
 		t.Fatalf("error should mention internet: %v", err)
+	}
+}
+
+func TestLoadRejectsLegacySrc(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := `
+listen: ":8080"
+vlans:
+  - {name: vlan10, iface: eth1, src: 192.168.10.5/24, gateway: 192.168.10.254}
+policy: {default: allow}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected legacy src key to be rejected")
+	}
+	if !strings.Contains(err.Error(), "src") {
+		t.Fatalf("error should mention src: %v", err)
 	}
 }
 
