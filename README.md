@@ -35,9 +35,10 @@ règle d'entrée de cette interface décide.
   on ne conclut pas sur les règles.
 - `UNEXPECTED_ALLOW` : joignable alors que `policy.yaml` dit deny (trou de sécu).
 - `UNEXPECTED_DENY` : bloqué alors que `policy.yaml` dit allow (cassé).
-- **Colonne Internet** : ping vers `1.1.1.1` / `8.8.8.8` depuis chaque VLAN, en
-  sortant par sa passerelle. `internet: deny` sur un VLAN (caméras, IoT…)
-  doit donner `BLOCKED` ; si ça répond, c'est `UNEXPECTED_ALLOW`.
+- **Colonnes distantes** (`remotes`) : ping vers une ou plusieurs IP (Internet,
+  DNS interne, reverse proxy, sous-réseau VPN, site distant…) depuis chaque
+  VLAN, en sortant par sa passerelle. Ex. `to: internet, action: deny` sur un
+  VLAN caméras doit donner `BLOCKED` ; si ça répond, `UNEXPECTED_ALLOW`.
 
 > **Limite v1** : viser `.254` teste la règle d'entrée d'OPNsense, pas un vrai
 > flux forwardé vers un hôte, et pas les ports. Pour valider un vrai
@@ -169,17 +170,15 @@ targets:
   mode: gateway        # gateway | hosts
   hosts: {}            # hosts: {vlan10: 192.168.10.10, ...}
 
-internet:
-  enabled: true
-  targets: ["1.1.1.1", "8.8.8.8"]
-  default: allow       # attente par défaut, "allow", "deny" ou ""
-  # par VLAN, dans la liste vlans :
-  #   - {..., internet: deny}
+remotes:
+  - {name: internet, label: Internet, targets: ["1.1.1.1", "8.8.8.8"]}
+  - {name: dns,      label: DNS,      targets: ["192.168.1.4"]}
 
 policy:
   default: allow
   rules:
     - {from: vlan10, to: vlan20, action: deny}
+    - {from: vlan10, to: internet, action: deny}   # to: VLAN ou remote
 
 alerts:
   webhook: ""          # POST JSON à chaque changement d'état
@@ -208,32 +207,40 @@ Chaque hôte doit répondre à l'ICMP et être distinct du LXC. Le LXC ne peut p
 être sa propre cible : le kernel livre en local avant de router, donc la voie
 retour serait court-circuitée.
 
-## Accès Internet par VLAN
+## Réseaux distants (remotes)
 
-Pour vérifier qu'un VLAN est bien coupé d'Internet (caméras, IoT, invités…) :
+`remotes` ajoute une colonne par destination à tester depuis chaque VLAN :
+Internet, serveur DNS, reverse proxy, sous-réseau VPN, site distant…
 
 ```yaml
-internet:
-  enabled: true
-  targets: ["1.1.1.1", "8.8.8.8"]
-  default: allow
+remotes:
+  - {name: internet, label: Internet, targets: ["1.1.1.1", "8.8.8.8"]}
+  - {name: dns,      label: DNS,      targets: ["192.168.1.4"]}
+  - {name: proxy,    label: "Reverse proxy", targets: ["192.168.50.1"]}
 
-vlans:
-  - {name: vlan10, ..., internet: allow}
-  - {name: cameras, ..., internet: deny}
+policy:
+  default: allow
+  rules:
+    - {from: vlan60,  to: internet, action: deny}
+    - {from: vlan100, to: proxy,    action: deny}
 ```
 
-- Chaque VLAN ping les cibles **en sortant par sa propre passerelle** (donc via
-  OPNsense et le WAN).
+- Une entrée = une colonne ; `targets` = une ou plusieurs IP.
 - Joignable si **au moins une** cible répond → `OK` ; aucune → `BLOCKED`
   (`REJECTED` si ICMP admin prohibited).
-- `deny` + joignable → `UNEXPECTED_ALLOW` (le blocage Internet ne marche pas).
-- `allow` + bloqué → `UNEXPECTED_DENY` (cassé).
-- L'historique est disponible sur la cellule `vlan → internet`.
+- L'attente se déclare dans `policy.rules` avec `to: <nom du remote>` ; `from`
+  peut être un VLAN. `*` accepté des deux côtés.
+- `deny` + joignable → `UNEXPECTED_ALLOW` ; `allow` + bloqué → `UNEXPECTED_DENY`.
+- Les cibles du même VLAN que la source sont testées en direct (sans firewall) ;
+  les autres traversent OPNsense via la patte du VLAN source.
+- Historique sur la cellule `vlan → <remote>`.
 
-Limite : c'est un test ICMP. Si ta règle bloque seulement le TCP/443 mais
-laisse passer l'ICMP, le dashboard dira `OK` à juste titre. Pour tester un port
-précis, il faudra un test TCP (pas encore implémenté).
+Limite : test ICMP. Si la règle ne bloque que le TCP/443, le dashboard dira
+`OK`. Un test TCP par port n'est pas encore implémenté.
+
+> Migration : `internet:` et `internet: deny` n'existent plus. Utiliser
+> `remotes` + `policy.rules` (`to: internet`). Le parsing est strict et refuse
+> l'ancien schéma avec un message explicite.
 
 ## CLI
 
@@ -280,8 +287,8 @@ sweep #1  2026-11-06T18:50:15Z  9 cells  0 violation(s)
 ## Métriques
 
 ```
-vlanmesh_probe_success{src,dst}              0/1   (dst="internet" pour le WAN)
-vlanmesh_internet_success{src}               0/1
+vlanmesh_probe_success{src,dst}              0/1   (dst = VLAN ou remote)
+vlanmesh_remote_success{remote,src}          0/1
 vlanmesh_probe_loss_ratio{src,dst}           0..1
 vlanmesh_probe_rtt_ms{src,dst,stat}          stat=min|avg|max
 vlanmesh_probe_status{src,dst,status}        1 pour le statut courant

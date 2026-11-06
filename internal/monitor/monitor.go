@@ -85,11 +85,11 @@ func (m *Monitor) Run(ctx context.Context) {
 }
 
 type job struct {
-	src      config.VLAN
-	dstName  string
-	dstIP    string
-	control  bool
-	internet bool
+	src     config.VLAN
+	dstName string
+	dstIP   string
+	control bool
+	remote  *config.Remote
 }
 
 func (m *Monitor) Sweep(ctx context.Context) {
@@ -120,8 +120,8 @@ func (m *Monitor) Sweep(ctx context.Context) {
 			switch {
 			case m.cfg.Demo:
 				r = m.demoResult(j)
-			case j.internet:
-				r = m.probeInternet(j.src)
+			case j.remote != nil:
+				r = m.probeRemote(j.src, j.remote)
 			default:
 				r = probe.Probe(j.src.SrcIP(), j.src.Iface, j.dstIP, m.cfg.Count, m.cfg.Timeout.D())
 			}
@@ -150,12 +150,7 @@ func (m *Monitor) Sweep(ctx context.Context) {
 	for i, j := range jobs {
 		c := model.Cell{Result: results[i], CheckedAt: now}
 		if !j.control {
-			var exp string
-			if j.internet {
-				exp, _ = m.cfg.InternetExpected(j.src.Name)
-			} else {
-				exp, _ = m.cfg.Policy.Expected(j.src.Name, j.dstName)
-			}
+			exp, _ := m.cfg.Policy.Expected(j.src.Name, j.dstName)
 			c.Expected = exp
 
 			if !controls[j.src.Name] {
@@ -190,10 +185,7 @@ func (m *Monitor) Sweep(ctx context.Context) {
 
 func (m *Monitor) buildJobs() []job {
 	vlans := m.cfg.VLANS
-	total := len(vlans) * len(vlans)
-	if m.cfg.Internet.Enabled {
-		total += len(vlans)
-	}
+	total := len(vlans)*len(vlans) + len(vlans)*len(m.cfg.Remotes)
 	jobs := make([]job, 0, total)
 	for i := range vlans {
 		src := vlans[i]
@@ -206,26 +198,27 @@ func (m *Monitor) buildJobs() []job {
 			dst := vlans[j]
 			jobs = append(jobs, job{src: src, dstName: dst.Name, dstIP: m.cfg.Targets.For(dst)})
 		}
-		if m.cfg.Internet.Enabled {
-			jobs = append(jobs, job{src: src, dstName: model.InternetDst, internet: true})
+		for r := range m.cfg.Remotes {
+			remote := &m.cfg.Remotes[r]
+			jobs = append(jobs, job{src: src, dstName: remote.Name, remote: remote})
 		}
 	}
 	return jobs
 }
 
-// probeInternet checks reachability of the public targets from one VLAN.
+// probeRemote checks reachability of one remote destination from one VLAN.
 // Reachable if at least one target answers; blocked if none does.
-func (m *Monitor) probeInternet(src config.VLAN) model.Result {
-	targets := m.cfg.InternetTargets()
+func (m *Monitor) probeRemote(src config.VLAN, remote *config.Remote) model.Result {
+	targets := remote.Targets
 	agg := model.Result{
 		Src:     src.Name,
-		Dst:     model.InternetDst,
+		Dst:     remote.Name,
 		SrcIP:   src.SrcIP(),
 		Started: time.Now(),
 	}
 	if len(targets) == 0 {
 		agg.Status = model.StatusError
-		agg.Err = "no internet target configured"
+		agg.Err = "no target configured"
 		return agg
 	}
 
@@ -342,6 +335,11 @@ func (m *Monitor) updateMetrics(cells []model.Cell, dur time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	remoteNames := make(map[string]bool, len(m.cfg.Remotes))
+	for _, r := range m.cfg.Remotes {
+		remoteNames[r.Name] = true
+	}
+
 	for _, c := range cells {
 		k := model.Key{Src: c.Src, Dst: c.Dst}
 		reachable := c.Status.Reachable()
@@ -350,8 +348,8 @@ func (m *Monitor) updateMetrics(cells []model.Cell, dur time.Duration) {
 			v = 1
 		}
 		metrics.ProbeSuccess.WithLabelValues(c.Src, c.Dst).Set(v)
-		if c.Dst == model.InternetDst {
-			metrics.InternetSuccess.WithLabelValues(c.Src).Set(v)
+		if remoteNames[c.Dst] {
+			metrics.RemoteSuccess.WithLabelValues(c.Dst, c.Src).Set(v)
 		}
 		metrics.ProbeLoss.WithLabelValues(c.Src, c.Dst).Set(c.Loss)
 		metrics.ProbeRTT.WithLabelValues(c.Src, c.Dst, "min").Set(c.RTTMin)
@@ -425,11 +423,18 @@ func (m *Monitor) Snapshot() model.Snapshot {
 	for i, v := range m.cfg.VLANS {
 		order[v.Name] = i
 	}
-	dstOrder := func(name string) int {
-		if name == model.InternetDst {
-			return len(m.cfg.VLANS)
+	remoteOrder := make(map[string]int, len(m.cfg.Remotes))
+	for i, r := range m.cfg.Remotes {
+		remoteOrder[r.Name] = i
+	}
+	dstIndex := func(name string) int {
+		if i, ok := order[name]; ok {
+			return i
 		}
-		return order[name]
+		if i, ok := remoteOrder[name]; ok {
+			return len(m.cfg.VLANS) + i
+		}
+		return len(m.cfg.VLANS) + len(m.cfg.Remotes)
 	}
 
 	cells := make([]model.Cell, 0, len(m.cells))
@@ -441,7 +446,7 @@ func (m *Monitor) Snapshot() model.Snapshot {
 		if oi != oj {
 			return oi < oj
 		}
-		return dstOrder(cells[i].Dst) < dstOrder(cells[j].Dst)
+		return dstIndex(cells[i].Dst) < dstIndex(cells[j].Dst)
 	})
 
 	sum := model.Summary{Sweeps: m.sweeps}
@@ -467,13 +472,21 @@ func (m *Monitor) Snapshot() model.Snapshot {
 	vlans := make([]model.VLANInfo, 0, len(m.cfg.VLANS))
 	for _, v := range m.cfg.VLANS {
 		vlans = append(vlans, model.VLANInfo{
-			Name:     v.Name,
-			VLANID:   v.VLANID,
-			Iface:    v.Iface,
-			Src:      v.Src,
-			Gateway:  v.Gateway,
-			Target:   m.cfg.Targets.For(v),
-			Internet: v.Internet,
+			Name:    v.Name,
+			VLANID:  v.VLANID,
+			Iface:   v.Iface,
+			Src:     v.Src,
+			Gateway: v.Gateway,
+			Target:  m.cfg.Targets.For(v),
+		})
+	}
+
+	remotes := make([]model.RemoteInfo, 0, len(m.cfg.Remotes))
+	for _, r := range m.cfg.Remotes {
+		remotes = append(remotes, model.RemoteInfo{
+			Name:    r.Name,
+			Label:   r.DisplayName(),
+			Targets: r.Targets,
 		})
 	}
 
@@ -487,16 +500,12 @@ func (m *Monitor) Snapshot() model.Snapshot {
 		Interval:    m.cfg.Interval.D().String(),
 		Demo:        m.cfg.Demo,
 		TargetsMode: m.cfg.Targets.Mode,
-		Internet: model.InternetInfo{
-			Enabled: m.cfg.Internet.Enabled,
-			Targets: m.cfg.Internet.Targets,
-			Default: m.cfg.Internet.Default,
-		},
-		Vlans:   vlans,
-		Policy:  pol,
-		Cells:   cells,
-		Summary: sum,
-		Issues:  m.issues,
+		Vlans:       vlans,
+		Remotes:     remotes,
+		Policy:      pol,
+		Cells:       cells,
+		Summary:     sum,
+		Issues:      m.issues,
 	}
 }
 
@@ -509,11 +518,10 @@ func (m *Monitor) demoResult(j job) model.Result {
 		DstIP:   j.dstIP,
 		Sent:    m.cfg.Count,
 	}
-	if j.internet {
-		targets := m.cfg.InternetTargets()
-		r.Sent = m.cfg.Count * len(targets)
-		if len(targets) > 0 {
-			r.DstIP = targets[0]
+	if j.remote != nil {
+		r.Sent = m.cfg.Count * len(j.remote.Targets)
+		if len(j.remote.Targets) > 0 {
+			r.DstIP = j.remote.Targets[0]
 		}
 	}
 	roll := rand.Float64()
@@ -528,9 +536,6 @@ func (m *Monitor) demoResult(j job) model.Result {
 	}
 
 	exp, _ := m.cfg.Policy.Expected(j.src.Name, j.dstName)
-	if j.internet {
-		exp, _ = m.cfg.InternetExpected(j.src.Name)
-	}
 	allowed := exp != "deny"
 
 	if allowed {

@@ -13,10 +13,10 @@ var (
 		Help: "1 if the directed probe is reachable (ok or degraded), else 0.",
 	}, []string{"src", "dst"})
 
-	InternetSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "vlanmesh_internet_success",
-		Help: "1 if the VLAN can reach the Internet targets, else 0.",
-	}, []string{"src"})
+	RemoteSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vlanmesh_remote_success",
+		Help: "1 if the VLAN can reach the remote (Internet, DNS, proxy, VPN...), else 0.",
+	}, []string{"remote", "src"})
 
 	ProbeLoss = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vlanmesh_probe_loss_ratio",
@@ -60,6 +60,6 @@ var (
 )
 
 func init() {
-	Registry.MustRegister(ProbeSuccess, InternetSuccess, ProbeLoss, ProbeRTT, ProbeStatus, PolicyViolation,
+	Registry.MustRegister(ProbeSuccess, RemoteSuccess, ProbeLoss, ProbeRTT, ProbeStatus, PolicyViolation,
 		LastSweep, SweepDuration, SweepsTotal, CellsTotal)
 }

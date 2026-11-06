@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,6 +34,8 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 
 func (d Duration) D() time.Duration { return time.Duration(d) }
 
+var remoteNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 type Config struct {
 	Listen      string   `yaml:"listen"`
 	Interval    Duration `yaml:"interval"`
@@ -43,26 +47,17 @@ type Config struct {
 	Demo        bool     `yaml:"demo"`
 	VLANS       []VLAN   `yaml:"vlans"`
 	Targets     Targets  `yaml:"targets"`
-	Internet    Internet `yaml:"internet"`
+	Remotes     []Remote `yaml:"remotes"`
 	Policy      Policy   `yaml:"policy"`
 	Alerts      Alerts   `yaml:"alerts"`
 }
 
-type Internet struct {
-	Enabled bool     `yaml:"enabled" json:"enabled"`
-	Targets []string `yaml:"targets" json:"targets"`
-	// Default expectation for VLANs without an explicit `internet:` field.
-	// "allow", "deny" or "" (no expectation).
-	Default string `yaml:"default" json:"default"`
-}
-
 type VLAN struct {
-	Name     string `yaml:"name" json:"name"`
-	VLANID   int    `yaml:"vlan_id" json:"vlan_id"`
-	Iface    string `yaml:"iface" json:"iface"`
-	Src      string `yaml:"src" json:"src"`
-	Gateway  string `yaml:"gateway" json:"gateway"`
-	Internet string `yaml:"internet" json:"internet"`
+	Name    string `yaml:"name" json:"name"`
+	VLANID  int    `yaml:"vlan_id" json:"vlan_id"`
+	Iface   string `yaml:"iface" json:"iface"`
+	Src     string `yaml:"src" json:"src"`
+	Gateway string `yaml:"gateway" json:"gateway"`
 }
 
 func (v VLAN) SrcIP() string {
@@ -97,21 +92,20 @@ func (t Targets) For(src VLAN) string {
 	return src.Gateway
 }
 
-// InternetTargets returns the public IPs probed from every VLAN.
-func (c *Config) InternetTargets() []string { return c.Internet.Targets }
+// Remote is an extra destination column: a network or host outside the VLAN
+// matrix (Internet, DNS server, reverse proxy, VPN subnet, remote site...).
+// Reachability is tested from every VLAN.
+type Remote struct {
+	Name    string   `yaml:"name" json:"name"`
+	Label   string   `yaml:"label" json:"label"`
+	Targets []string `yaml:"targets" json:"targets"`
+}
 
-// InternetExpected returns the intended Internet access for a VLAN:
-// the per-VLAN `internet:` override first, then internet.default.
-func (c *Config) InternetExpected(vlanName string) (string, bool) {
-	for _, v := range c.VLANS {
-		if v.Name == vlanName && v.Internet != "" {
-			return v.Internet, true
-		}
+func (r Remote) DisplayName() string {
+	if r.Label != "" {
+		return r.Label
 	}
-	if c.Internet.Default == "allow" || c.Internet.Default == "deny" {
-		return c.Internet.Default, true
-	}
-	return "", false
+	return r.Name
 }
 
 type Policy struct {
@@ -126,7 +120,7 @@ type Rule struct {
 }
 
 // Expected returns the intended action ("allow"/"deny") for a directed pair.
-// Wildcards "*" are supported for From and To.
+// From/To accept VLAN names and remote names. Wildcards "*" are supported.
 func (p Policy) Expected(from, to string) (string, bool) {
 	for _, r := range p.Rules {
 		f := r.From == "*" || r.From == from
@@ -151,7 +145,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	var c Config
-	if err := yaml.Unmarshal(b, &c); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&c); err != nil {
+		if strings.Contains(err.Error(), "internet") {
+			return nil, fmt.Errorf("parse %s: %w\n\n`internet:` n'existe plus : declare-le dans remotes, ex.\n  remotes:\n    - {name: internet, label: Internet, targets: [\"1.1.1.1\", \"8.8.8.8\"]}\net remplace `internet: deny` par une regle policy: {from: <vlan>, to: internet, action: deny}", path, err)
+		}
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	c.applyDefaults()
@@ -189,12 +188,9 @@ func (c *Config) applyDefaults() {
 	if c.Targets.Hosts == nil {
 		c.Targets.Hosts = map[string]string{}
 	}
-	if c.Internet.Enabled {
-		if len(c.Internet.Targets) == 0 {
-			c.Internet.Targets = []string{"1.1.1.1", "8.8.8.8"}
-		}
-		if c.Internet.Default == "" {
-			c.Internet.Default = "allow"
+	for i := range c.Remotes {
+		if c.Remotes[i].Label == "" {
+			c.Remotes[i].Label = c.Remotes[i].Name
 		}
 	}
 }
@@ -217,17 +213,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Policy.Default != "" && c.Policy.Default != "allow" && c.Policy.Default != "deny" {
 		return fmt.Errorf("policy.default must be \"allow\", \"deny\" or empty")
-	}
-	if c.Internet.Default != "" && c.Internet.Default != "allow" && c.Internet.Default != "deny" {
-		return fmt.Errorf("internet.default must be \"allow\", \"deny\" or empty")
-	}
-	for i, t := range c.Internet.Targets {
-		if net.ParseIP(t) == nil {
-			return fmt.Errorf("internet.targets[%d]: invalid IP %q", i, t)
-		}
-	}
-	if c.Internet.Enabled && len(c.Internet.Targets) == 0 {
-		return fmt.Errorf("internet.targets: at least one target is required when internet.enabled is true")
 	}
 	for i, r := range c.Policy.Rules {
 		if r.Action != "allow" && r.Action != "deny" {
@@ -260,9 +245,6 @@ func (c *Config) Validate() error {
 		if v.Gateway == "" {
 			return fmt.Errorf("vlans[%d] (%s): gateway is required", i, v.Name)
 		}
-		if v.Internet != "" && v.Internet != "allow" && v.Internet != "deny" {
-			return fmt.Errorf("vlans[%d] (%s): internet must be \"allow\", \"deny\" or empty", i, v.Name)
-		}
 		gw := net.ParseIP(v.Gateway)
 		if gw == nil {
 			return fmt.Errorf("vlans[%d] (%s): invalid gateway %q", i, v.Name, v.Gateway)
@@ -277,18 +259,31 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("vlans[%d] (%s): src prefix must be <= /30", i, v.Name)
 		}
 	}
-	return nil
-}
 
-// Summary returns a compact human description of a VLAN.
-func (v VLAN) Summary() string {
-	return fmt.Sprintf("%s (%s, %s via %s)", v.Name, v.Iface, v.Src, v.Gateway)
-}
-
-// DisplayName returns name or a fallback based on iface.
-func (v VLAN) DisplayName() string {
-	if v.Name != "" {
-		return v.Name
+	remoteNames := map[string]bool{}
+	for i := range c.Remotes {
+		r := &c.Remotes[i]
+		if r.Name == "" {
+			return fmt.Errorf("remotes[%d]: name is required", i)
+		}
+		if !remoteNameRe.MatchString(r.Name) {
+			return fmt.Errorf("remotes[%d] (%s): name must match [a-zA-Z0-9_-]+", i, r.Name)
+		}
+		if remoteNames[r.Name] {
+			return fmt.Errorf("remotes[%d]: duplicate name %q", i, r.Name)
+		}
+		remoteNames[r.Name] = true
+		if seen[r.Name] {
+			return fmt.Errorf("remotes[%d] (%s): name collides with a VLAN name", i, r.Name)
+		}
+		if len(r.Targets) == 0 {
+			return fmt.Errorf("remotes[%d] (%s): at least one target is required", i, r.Name)
+		}
+		for j, t := range r.Targets {
+			if net.ParseIP(t) == nil {
+				return fmt.Errorf("remotes[%d] (%s): invalid target[%d] %q (IPv4/IPv6 literal expected)", i, r.Name, j, t)
+			}
+		}
 	}
-	return strings.TrimSpace(v.Iface)
+	return nil
 }

@@ -2,9 +2,6 @@ package model
 
 import "time"
 
-// InternetDst is the reserved destination name used for Internet probes.
-const InternetDst = "internet"
-
 type Status string
 
 const (
@@ -55,19 +52,19 @@ type Cell struct {
 }
 
 type VLANInfo struct {
-	Name     string `json:"name"`
-	VLANID   int    `json:"vlan_id"`
-	Iface    string `json:"iface"`
-	Src      string `json:"src"`
-	Gateway  string `json:"gateway"`
-	Target   string `json:"target"`
-	Internet string `json:"internet,omitempty"`
+	Name    string `json:"name"`
+	VLANID  int    `json:"vlan_id"`
+	Iface   string `json:"iface"`
+	Src     string `json:"src"`
+	Gateway string `json:"gateway"`
+	Target  string `json:"target"`
 }
 
-type InternetInfo struct {
-	Enabled bool     `json:"enabled"`
+// RemoteInfo is an extra destination column (Internet, DNS, proxy, VPN...).
+type RemoteInfo struct {
+	Name    string   `json:"name"`
+	Label   string   `json:"label"`
 	Targets []string `json:"targets"`
-	Default string   `json:"default"`
 }
 
 type PolicyInfo struct {
@@ -86,8 +83,8 @@ type Snapshot struct {
 	Interval    string       `json:"interval"`
 	Demo        bool         `json:"demo"`
 	TargetsMode string       `json:"targets_mode"`
-	Internet    InternetInfo `json:"internet"`
 	Vlans       []VLANInfo   `json:"vlans"`
+	Remotes     []RemoteInfo `json:"remotes"`
 	Policy      PolicyInfo   `json:"policy"`
 	Cells       []Cell       `json:"cells"`
 	Summary     Summary      `json:"summary"`

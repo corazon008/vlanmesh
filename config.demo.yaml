@@ -18,16 +18,16 @@ vlans:
   - {name: vlan40, vlan_id: 40, iface: eth4, src: 192.168.40.5/24, gateway: 192.168.40.254}
   - {name: vlan50, vlan_id: 50, iface: eth5, src: 192.168.50.5/24, gateway: 192.168.50.254}
   - {name: vlan60, vlan_id: 60, iface: eth6, src: 192.168.60.5/24, gateway: 192.168.60.254}
-  - {name: vlan70, vlan_id: 70, iface: eth7, src: 192.168.70.5/24, gateway: 192.168.70.254, internet: deny}
-  - {name: vlan80, vlan_id: 80, iface: eth8, src: 192.168.80.5/24, gateway: 192.168.80.254, internet: deny}
+  - {name: vlan70, vlan_id: 70, iface: eth7, src: 192.168.70.5/24, gateway: 192.168.70.254}
+  - {name: vlan80, vlan_id: 80, iface: eth8, src: 192.168.80.5/24, gateway: 192.168.80.254}
 
 targets:
   mode: gateway
 
-internet:
-  enabled: true
-  targets: ["1.1.1.1", "8.8.8.8"]
-  default: allow
+remotes:
+  - {name: internet, label: Internet, targets: ["1.1.1.1", "8.8.8.8"]}
+  - {name: dns, label: DNS, targets: ["192.168.1.4"]}
+  - {name: proxy, label: "Reverse proxy", targets: ["192.168.50.1"]}
 
 policy:
   default: allow
@@ -37,6 +37,9 @@ policy:
     - {from: vlan20, to: vlan10, action: deny}
     - {from: vlan40, to: vlan50, action: deny}
     - {from: vlan50, to: vlan60, action: deny}
+    - {from: vlan70, to: internet, action: deny}
+    - {from: vlan80, to: internet, action: deny}
+    - {from: vlan80, to: proxy, action: deny}
 
 alerts:
   webhook: ""

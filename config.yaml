@@ -28,7 +28,7 @@ vlans:
   - {name: vlan70, vlan_id: 70, iface: eth7, src: 192.168.70.5/24, gateway: 192.168.70.254}
   - {name: vlan80, vlan_id: 80, iface: eth8, src: 192.168.80.5/24, gateway: 192.168.80.254}
 
-# Cible de chaque cellule :
+# Cible de chaque cellule de la matrice VLAN :
 #   gateway = le .254 du VLAN (OPNsense lui-même, smoke test ingress)
 #   hosts   = un hôte dédié par VLAN (vrai test forward + ports)
 targets:
@@ -38,30 +38,22 @@ targets:
   #   vlan10: 192.168.10.10
   #   vlan20: 192.168.20.10
 
-# Accès Internet par VLAN : probe ICMP vers ces IP publiques, en sortant par
-# la passerelle du VLAN. Permet de vérifier qu'un VLAN "caméras" est bien
-# bloqué côté OPNsense.
-#
-#   internet: allow  -> doit sortir
-#   internet: deny   -> doit être bloqué
-#   absent           -> internet.default
-internet:
-  enabled: true
-  targets: ["1.1.1.1", "8.8.8.8"]
-  default: allow
+# Colonnes distantes : testées depuis CHAQUE VLAN, agrégées sur les targets
+# (joignable si au moins une IP répond). Un remote = une colonne.
+remotes:
+  - {name: internet, label: Internet, targets: ["1.1.1.1", "8.8.8.8"]}
+  # Exemples : serveur DNS interne, reverse proxy, sous-réseau VPN, site distant.
+  # - {name: dns,   label: DNS,             targets: ["192.168.1.4"]}
+  # - {name: proxy, label: "Reverse proxy", targets: ["192.168.50.1"]}
+  # - {name: vpn,   label: VPN,             targets: ["10.8.0.1"]}
 
-# Exemple : VLAN caméras sans Internet
-#  - {name: ipcam, vlan_id: 60, iface: eth6, src: 192.168.60.5/24, gateway: 192.168.60.254, internet: deny}
-
-# Politique attendue. Sert à détecter les écarts :
-#   allow attendu + bloqué  -> unexpected_deny  (cassé)
+# Politique attendue. `to:` accepte un nom de VLAN ou de remote.
+#   allow attendu + bloqué   -> unexpected_deny  (cassé)
 #   deny  attendu + joignable -> unexpected_allow (trou de sécurité)
-# EXEMPLE à adapter à tes règles OPNsense.
 policy:
   default: allow
   rules:
-    - {from: vlan10, to: vlan20, action: deny}
-    - {from: vlan20, to: vlan10, action: deny}
+    - {from: vlan10, to: internet, action: deny}
 
 alerts:
   # POST JSON à chaque changement d'état (ntfy, Gotify, Discord, ...).

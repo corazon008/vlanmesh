@@ -20,14 +20,20 @@ func testConfig() *config.Config {
 		Demo:        true,
 		VLANS: []config.VLAN{
 			{Name: "vlan10", Iface: "eth1", Src: "192.168.10.5/24", Gateway: "192.168.10.254"},
-			{Name: "vlan20", Iface: "eth2", Src: "192.168.20.5/24", Gateway: "192.168.20.254", Internet: "deny"},
+			{Name: "vlan20", Iface: "eth2", Src: "192.168.20.5/24", Gateway: "192.168.20.254"},
 			{Name: "vlan30", Iface: "eth3", Src: "192.168.30.5/24", Gateway: "192.168.30.254"},
 		},
-		Targets:  config.Targets{Mode: "gateway", Hosts: map[string]string{}},
-		Internet: config.Internet{Enabled: true, Targets: []string{"1.1.1.1"}, Default: "allow"},
+		Targets: config.Targets{Mode: "gateway", Hosts: map[string]string{}},
+		Remotes: []config.Remote{
+			{Name: "internet", Label: "Internet", Targets: []string{"1.1.1.1"}},
+			{Name: "dns", Label: "DNS", Targets: []string{"192.168.1.4"}},
+		},
 		Policy: config.Policy{
 			Default: "allow",
-			Rules:   []config.Rule{{From: "vlan10", To: "vlan20", Action: "deny"}},
+			Rules: []config.Rule{
+				{From: "vlan10", To: "vlan20", Action: "deny"},
+				{From: "vlan20", To: "dns", Action: "deny"},
+			},
 		},
 	}
 }
@@ -43,34 +49,35 @@ func TestDemoSweep(t *testing.T) {
 	m.Sweep(context.Background())
 
 	snap := m.Snapshot()
-	if len(snap.Cells) != 12 {
-		t.Fatalf("cells: got %d, want 12 (3x3 matrix + 3 internet)", len(snap.Cells))
+	// 3 VLANs: 3 controls + 6 directed pairs + 3*2 remote cells = 15.
+	if len(snap.Cells) != 15 {
+		t.Fatalf("cells: got %d, want 15", len(snap.Cells))
 	}
-	if !snap.Internet.Enabled {
-		t.Error("internet should be enabled")
+	if len(snap.Remotes) != 2 {
+		t.Errorf("remotes: got %d, want 2", len(snap.Remotes))
 	}
 	if snap.Summary.Sweeps != 1 {
 		t.Errorf("sweeps=%d", snap.Summary.Sweeps)
 	}
 
-	internetCells := 0
+	wantRemoteExp := map[string]map[string]string{
+		"internet": {"vlan10": "allow", "vlan20": "allow", "vlan30": "allow"},
+		"dns":      {"vlan10": "allow", "vlan20": "deny", "vlan30": "allow"},
+	}
+	remoteCells := 0
 	for _, c := range snap.Cells {
-		if c.Dst == model.InternetDst {
-			internetCells++
-			want := "allow"
-			if c.Src == "vlan20" {
-				want = "deny"
-			}
-			if c.Expected != want {
-				t.Errorf("internet %s: expected=%q, want %q", c.Src, c.Expected, want)
+		if want, ok := wantRemoteExp[c.Dst]; ok {
+			remoteCells++
+			if c.Expected != want[c.Src] {
+				t.Errorf("remote %s/%s: expected=%q, want %q", c.Dst, c.Src, c.Expected, want[c.Src])
 			}
 			if c.SrcIP == "" || c.DstIP == "" {
-				t.Errorf("internet %s: missing src/dst ip", c.Src)
+				t.Errorf("remote %s/%s: missing src/dst ip", c.Dst, c.Src)
 			}
 		}
 	}
-	if internetCells != 3 {
-		t.Fatalf("internet cells: got %d, want 3", internetCells)
+	if remoteCells != 6 {
+		t.Fatalf("remote cells: got %d, want 6", remoteCells)
 	}
 
 	for _, c := range snap.Cells {
@@ -107,6 +114,9 @@ func TestDemoSweep(t *testing.T) {
 	if len(hist) != 1 {
 		t.Fatalf("history: got %d, want 1", len(hist))
 	}
+	if hist, _ := st.History("vlan10", "dns", 10); len(hist) != 1 {
+		t.Fatalf("remote history: got %d, want 1", len(hist))
+	}
 }
 
 func TestSnapshotBeforeSweep(t *testing.T) {
@@ -124,8 +134,8 @@ func TestSnapshotBeforeSweep(t *testing.T) {
 	if len(snap.Vlans) != 3 {
 		t.Errorf("vlans: got %d", len(snap.Vlans))
 	}
-	if !snap.Internet.Enabled {
-		t.Errorf("internet should be enabled in snapshot")
+	if len(snap.Remotes) != 2 {
+		t.Errorf("remotes: got %d", len(snap.Remotes))
 	}
 	if len(snap.Issues) != 1 {
 		t.Errorf("issues: got %d", len(snap.Issues))

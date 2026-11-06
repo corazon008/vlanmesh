@@ -51,9 +51,9 @@ table.matrix th.corner{left:0;z-index:4;background:var(--panel)}
 table.matrix th.rowh{position:sticky;left:0;background:var(--panel);text-align:left;z-index:2;min-width:118px}
 table.matrix th .nm{display:block;color:var(--text);font-size:12px;font-weight:600}
 table.matrix th .sub{display:block;color:#5f7185;font-size:10px;font-family:ui-monospace,Menlo,monospace}
-table.matrix th.inet{color:var(--accent)}
-table.matrix th.inet .nm{color:var(--accent)}
-table.matrix td.inet{border-left:1px solid var(--line2)}
+table.matrix th.remote{color:var(--accent)}
+table.matrix th.remote .nm{color:var(--accent)}
+table.matrix td.remote{border-left:1px solid var(--line2)}
 td.cell{min-width:86px;text-align:center;padding:8px 6px;border-radius:8px;border:1px solid transparent;cursor:pointer;transition:transform .06s ease,filter .1s ease;position:relative}
 td.cell:hover{filter:brightness(1.25)}
 td.cell.self{outline:1px dashed #2b3a4b;outline-offset:-3px}
@@ -187,7 +187,7 @@ async function load(){
         const [s,d]=h.split('|');
         const known=(state.data.vlans||[]).some(v=>v.name===s)&&
           ((state.data.vlans||[]).some(v=>v.name===d)||
-           (d==='internet'&&state.data.internet&&state.data.internet.enabled));
+           (state.data.remotes||[]).some(r=>r.name===d));
         if(known) state.selected={src:s,dst:d};
       }
     }
@@ -204,7 +204,7 @@ function render(){
 
   el('modeTag').textContent = d.demo ? 'démo' : 'live';
   el('modeTag').className = 'tag'+(d.demo?' demo':'');
-  el('footMeta').textContent = d.vlans.length+' VLANs · cible '+(d.targets_mode==='hosts'?'hôtes':'passerelles .254')+' · intervalle '+d.interval;
+  el('footMeta').textContent = d.vlans.length+' VLANs · cible '+(d.targets_mode==='hosts'?'hôtes':'passerelles .254')+' · intervalle '+d.interval+((d.remotes&&d.remotes.length)?' · '+d.remotes.length+' remote(s)':'');
 
   renderSummary(d);
   renderIssues();
@@ -243,7 +243,7 @@ function buildMatrix(d){
   const t=el('matrix');
   t.innerHTML='';
   state.cells.clear();
-  const hasInet=!!(d.internet&&d.internet.enabled);
+  const remotes=d.remotes||[];
   const head=document.createElement('thead');
   const hr=document.createElement('tr');
   const corner=document.createElement('th');
@@ -256,11 +256,11 @@ function buildMatrix(d){
     th.title=v.name+' — '+v.src+' — iface '+v.iface;
     hr.appendChild(th);
   }
-  if(hasInet){
+  for(const r of remotes){
     const th=document.createElement('th');
-    th.className='inet';
-    th.innerHTML='<span class="nm">Internet</span><span class="sub">'+esc((d.internet.targets||[]).join(' · '))+'</span>';
-    th.title='Accès Internet depuis chaque VLAN';
+    th.className='remote';
+    th.innerHTML='<span class="nm">'+esc(r.label||r.name)+'</span><span class="sub">'+esc((r.targets||[]).join(' · '))+'</span>';
+    th.title=(r.label||r.name)+' — cible '+(r.targets||[]).join(', ');
     hr.appendChild(th);
   }
   head.appendChild(hr); t.appendChild(head);
@@ -281,12 +281,12 @@ function buildMatrix(d){
       state.cells.set(src.name+'|'+dst.name,td);
       tr.appendChild(td);
     }
-    if(hasInet){
+    for(const r of remotes){
       const td=document.createElement('td');
-      td.className='cell inet s-unknown';
-      td.dataset.src=src.name; td.dataset.dst='internet';
-      td.addEventListener('click',()=>selectCell(src.name,'internet'));
-      state.cells.set(src.name+'|internet',td);
+      td.className='cell remote s-unknown';
+      td.dataset.src=src.name; td.dataset.dst=r.name;
+      td.addEventListener('click',()=>selectCell(src.name,r.name));
+      state.cells.set(src.name+'|'+r.name,td);
       tr.appendChild(td);
     }
     body.appendChild(tr);
@@ -296,8 +296,8 @@ function buildMatrix(d){
 }
 
 function matrixKey(d){
-  const inet=(d.internet&&d.internet.enabled)?'|inet:'+((d.internet.targets||[]).join(',')):'';
-  return d.vlans.map(v=>v.name).join('|')+inet;
+  const remotes=(d.remotes||[]).map(r=>r.name+':'+(r.targets||[]).join(',')).join('|');
+  return d.vlans.map(v=>v.name).join('|')+'|remotes:'+remotes;
 }
 
 function renderMatrix(d){

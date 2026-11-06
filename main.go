@@ -52,19 +52,14 @@ func main() {
 	if *check {
 		slog.Info("config OK", "vlans", len(cfg.VLANS), "targets", cfg.Targets.Mode, "demo", cfg.Demo)
 		for _, v := range cfg.VLANS {
-			inet := "off"
-			if cfg.Internet.Enabled {
-				exp, _ := cfg.InternetExpected(v.Name)
-				if exp == "" {
-					exp = "?"
-				}
-				inet = exp
-			}
-			fmt.Printf("  %-10s iface=%-6s src=%-20s gw=%-16s target=%-16s internet=%s\n",
-				v.Name, v.Iface, v.Src, v.Gateway, cfg.Targets.For(v), inet)
+			fmt.Printf("  %-10s iface=%-6s src=%-20s gw=%-16s target=%s\n",
+				v.Name, v.Iface, v.Src, v.Gateway, cfg.Targets.For(v))
 		}
-		if cfg.Internet.Enabled {
-			fmt.Printf("internet targets: %v\n", cfg.InternetTargets())
+		if len(cfg.Remotes) > 0 {
+			fmt.Printf("remotes: %d\n", len(cfg.Remotes))
+			for _, r := range cfg.Remotes {
+				fmt.Printf("  %-10s label=%-16s targets=%v\n", r.Name, r.DisplayName(), r.Targets)
+			}
 		}
 		issues := netcfg.Diagnose(cfg)
 		if len(issues) == 0 {
@@ -140,8 +135,8 @@ func printMatrix(cfg *config.Config, snap model.Snapshot) {
 	for _, v := range cfg.VLANS {
 		fmt.Printf("%-*s", w, trunc(v.Name, w-1))
 	}
-	if cfg.Internet.Enabled {
-		fmt.Printf("%-*s", w, "internet")
+	for _, r := range cfg.Remotes {
+		fmt.Printf("%-*s", w, trunc(r.DisplayName(), w-1))
 	}
 	fmt.Println()
 	for _, src := range cfg.VLANS {
@@ -154,8 +149,8 @@ func printMatrix(cfg *config.Config, snap model.Snapshot) {
 			}
 			fmt.Printf("%-*s", w, trunc(cell, w-1))
 		}
-		if cfg.Internet.Enabled {
-			c, ok := byKey[model.Key{Src: src.Name, Dst: model.InternetDst}]
+		for _, r := range cfg.Remotes {
+			c, ok := byKey[model.Key{Src: src.Name, Dst: r.Name}]
 			cell := "-"
 			if ok {
 				cell = matrixCell(c)

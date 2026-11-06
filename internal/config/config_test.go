@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestPolicyExpected(t *testing.T) {
 	p := Policy{
@@ -9,6 +14,7 @@ func TestPolicyExpected(t *testing.T) {
 			{From: "vlan10", To: "vlan20", Action: "deny"},
 			{From: "vlan30", To: "*", Action: "deny"},
 			{From: "*", To: "vlan99", Action: "deny"},
+			{From: "vlan40", To: "dns", Action: "deny"},
 		},
 	}
 	cases := []struct {
@@ -19,6 +25,8 @@ func TestPolicyExpected(t *testing.T) {
 		{"vlan30", "vlan10", "deny"},
 		{"vlan30", "vlan20", "deny"},
 		{"vlan10", "vlan99", "deny"},
+		{"vlan40", "dns", "deny"},
+		{"vlan50", "dns", "allow"},
 		{"vlan40", "vlan50", "allow"},
 	}
 	for _, c := range cases {
@@ -90,49 +98,99 @@ func TestVLANHelpers(t *testing.T) {
 	}
 }
 
-func TestInternetExpected(t *testing.T) {
+func TestRemotes(t *testing.T) {
 	c := validConfig()
-	c.Internet = Internet{Enabled: true, Targets: []string{"1.1.1.1", "8.8.8.8"}, Default: "allow"}
-	c.VLANS[0].Internet = "deny"
+	c.Remotes = []Remote{
+		{Name: "internet", Targets: []string{"1.1.1.1", "8.8.8.8"}},
+		{Name: "dns", Label: "DNS", Targets: []string{"192.168.1.4"}},
+	}
 	c.applyDefaults()
 	if err := c.Validate(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("valid remotes rejected: %v", err)
 	}
-	if got, ok := c.InternetExpected("vlan10"); !ok || got != "deny" {
-		t.Errorf("vlan10: got %q ok=%v, want deny", got, ok)
+	if c.Remotes[0].Label != "internet" {
+		t.Errorf("label should default to name, got %q", c.Remotes[0].Label)
 	}
-	if got, ok := c.InternetExpected("vlan20"); !ok || got != "allow" {
-		t.Errorf("vlan20: got %q ok=%v, want allow", got, ok)
+	if got := c.Remotes[1].DisplayName(); got != "DNS" {
+		t.Errorf("DisplayName=%q", got)
 	}
 }
 
-func TestInternetDefaults(t *testing.T) {
+func TestRemoteNameCollidesWithVLAN(t *testing.T) {
 	c := validConfig()
-	c.Internet = Internet{Enabled: true}
-	c.applyDefaults()
-	if len(c.Internet.Targets) == 0 {
-		t.Fatal("default internet targets should be filled")
-	}
-	if c.Internet.Default != "allow" {
-		t.Errorf("default=%q, want allow", c.Internet.Default)
-	}
-	if err := c.Validate(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestInternetValidation(t *testing.T) {
-	c := validConfig()
-	c.Internet = Internet{Enabled: true, Targets: []string{"not-an-ip"}}
+	c.Remotes = []Remote{{Name: "vlan10", Targets: []string{"192.168.1.4"}}}
 	c.applyDefaults()
 	if err := c.Validate(); err == nil {
-		t.Fatal("expected invalid internet target to be rejected")
+		t.Fatal("expected collision between remote and VLAN names")
 	}
+}
 
-	c2 := validConfig()
-	c2.VLANS[0].Internet = "maybe"
-	c2.applyDefaults()
-	if err := c2.Validate(); err == nil {
-		t.Fatal("expected invalid per-VLAN internet action to be rejected")
+func TestRemoteValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		remote  Remote
+		wantErr bool
+	}{
+		{"no target", Remote{Name: "x"}, true},
+		{"bad target", Remote{Name: "x", Targets: []string{"dns.lan"}}, true},
+		{"bad name", Remote{Name: "a b", Targets: []string{"1.1.1.1"}}, true},
+		{"duplicate", Remote{Name: "x", Targets: []string{"1.1.1.1"}}, true},
+		{"ok", Remote{Name: "ok-name", Targets: []string{"1.1.1.1"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Remotes = []Remote{tc.remote}
+			if tc.name == "duplicate" {
+				c.Remotes = append(c.Remotes, tc.remote)
+			}
+			c.applyDefaults()
+			err := c.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsLegacyInternet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := `
+listen: ":8080"
+vlans:
+  - {name: vlan10, iface: eth1, src: 192.168.10.5/24, gateway: 192.168.10.254}
+internet:
+  enabled: true
+  targets: ["1.1.1.1"]
+policy: {default: allow}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected legacy internet key to be rejected")
+	}
+	if !strings.Contains(err.Error(), "internet") {
+		t.Fatalf("error should mention internet: %v", err)
+	}
+}
+
+func TestLoadRejectsUnknownField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := `
+listen: ":8080"
+nonsense: true
+vlans:
+  - {name: vlan10, iface: eth1, src: 192.168.10.5/24, gateway: 192.168.10.254}
+policy: {default: allow}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected unknown field to be rejected")
 	}
 }
