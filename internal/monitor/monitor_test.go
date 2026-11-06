@@ -20,10 +20,11 @@ func testConfig() *config.Config {
 		Demo:        true,
 		VLANS: []config.VLAN{
 			{Name: "vlan10", Iface: "eth1", Src: "192.168.10.5/24", Gateway: "192.168.10.254"},
-			{Name: "vlan20", Iface: "eth2", Src: "192.168.20.5/24", Gateway: "192.168.20.254"},
+			{Name: "vlan20", Iface: "eth2", Src: "192.168.20.5/24", Gateway: "192.168.20.254", Internet: "deny"},
 			{Name: "vlan30", Iface: "eth3", Src: "192.168.30.5/24", Gateway: "192.168.30.254"},
 		},
-		Targets: config.Targets{Mode: "gateway", Hosts: map[string]string{}},
+		Targets:  config.Targets{Mode: "gateway", Hosts: map[string]string{}},
+		Internet: config.Internet{Enabled: true, Targets: []string{"1.1.1.1"}, Default: "allow"},
 		Policy: config.Policy{
 			Default: "allow",
 			Rules:   []config.Rule{{From: "vlan10", To: "vlan20", Action: "deny"}},
@@ -42,11 +43,34 @@ func TestDemoSweep(t *testing.T) {
 	m.Sweep(context.Background())
 
 	snap := m.Snapshot()
-	if len(snap.Cells) != 9 {
-		t.Fatalf("cells: got %d, want 9", len(snap.Cells))
+	if len(snap.Cells) != 12 {
+		t.Fatalf("cells: got %d, want 12 (3x3 matrix + 3 internet)", len(snap.Cells))
+	}
+	if !snap.Internet.Enabled {
+		t.Error("internet should be enabled")
 	}
 	if snap.Summary.Sweeps != 1 {
 		t.Errorf("sweeps=%d", snap.Summary.Sweeps)
+	}
+
+	internetCells := 0
+	for _, c := range snap.Cells {
+		if c.Dst == model.InternetDst {
+			internetCells++
+			want := "allow"
+			if c.Src == "vlan20" {
+				want = "deny"
+			}
+			if c.Expected != want {
+				t.Errorf("internet %s: expected=%q, want %q", c.Src, c.Expected, want)
+			}
+			if c.SrcIP == "" || c.DstIP == "" {
+				t.Errorf("internet %s: missing src/dst ip", c.Src)
+			}
+		}
+	}
+	if internetCells != 3 {
+		t.Fatalf("internet cells: got %d, want 3", internetCells)
 	}
 
 	for _, c := range snap.Cells {
@@ -99,6 +123,9 @@ func TestSnapshotBeforeSweep(t *testing.T) {
 	}
 	if len(snap.Vlans) != 3 {
 		t.Errorf("vlans: got %d", len(snap.Vlans))
+	}
+	if !snap.Internet.Enabled {
+		t.Errorf("internet should be enabled in snapshot")
 	}
 	if len(snap.Issues) != 1 {
 		t.Errorf("issues: got %d", len(snap.Issues))

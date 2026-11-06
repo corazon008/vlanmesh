@@ -38,6 +38,21 @@ targets:
   #   vlan10: 192.168.10.10
   #   vlan20: 192.168.20.10
 
+# Accès Internet par VLAN : probe ICMP vers ces IP publiques, en sortant par
+# la passerelle du VLAN. Permet de vérifier qu'un VLAN "caméras" est bien
+# bloqué côté OPNsense.
+#
+#   internet: allow  -> doit sortir
+#   internet: deny   -> doit être bloqué
+#   absent           -> internet.default
+internet:
+  enabled: true
+  targets: ["1.1.1.1", "8.8.8.8"]
+  default: allow
+
+# Exemple : VLAN caméras sans Internet
+#  - {name: ipcam, vlan_id: 60, iface: eth6, src: 192.168.60.5/24, gateway: 192.168.60.254, internet: deny}
+
 # Politique attendue. Sert à détecter les écarts :
 #   allow attendu + bloqué  -> unexpected_deny  (cassé)
 #   deny  attendu + joignable -> unexpected_allow (trou de sécurité)

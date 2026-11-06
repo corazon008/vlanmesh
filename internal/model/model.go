@@ -2,6 +2,9 @@ package model
 
 import "time"
 
+// InternetDst is the reserved destination name used for Internet probes.
+const InternetDst = "internet"
+
 type Status string
 
 const (
@@ -52,12 +55,19 @@ type Cell struct {
 }
 
 type VLANInfo struct {
-	Name    string `json:"name"`
-	VLANID  int    `json:"vlan_id"`
-	Iface   string `json:"iface"`
-	Src     string `json:"src"`
-	Gateway string `json:"gateway"`
-	Target  string `json:"target"`
+	Name     string `json:"name"`
+	VLANID   int    `json:"vlan_id"`
+	Iface    string `json:"iface"`
+	Src      string `json:"src"`
+	Gateway  string `json:"gateway"`
+	Target   string `json:"target"`
+	Internet string `json:"internet,omitempty"`
+}
+
+type InternetInfo struct {
+	Enabled bool     `json:"enabled"`
+	Targets []string `json:"targets"`
+	Default string   `json:"default"`
 }
 
 type PolicyInfo struct {
@@ -72,15 +82,16 @@ type PolicyRule struct {
 }
 
 type Snapshot struct {
-	GeneratedAt time.Time  `json:"generated_at"`
-	Interval    string     `json:"interval"`
-	Demo        bool       `json:"demo"`
-	TargetsMode string     `json:"targets_mode"`
-	Vlans       []VLANInfo `json:"vlans"`
-	Policy      PolicyInfo `json:"policy"`
-	Cells       []Cell     `json:"cells"`
-	Summary     Summary    `json:"summary"`
-	Issues      []string   `json:"issues,omitempty"`
+	GeneratedAt time.Time    `json:"generated_at"`
+	Interval    string       `json:"interval"`
+	Demo        bool         `json:"demo"`
+	TargetsMode string       `json:"targets_mode"`
+	Internet    InternetInfo `json:"internet"`
+	Vlans       []VLANInfo   `json:"vlans"`
+	Policy      PolicyInfo   `json:"policy"`
+	Cells       []Cell       `json:"cells"`
+	Summary     Summary      `json:"summary"`
+	Issues      []string     `json:"issues,omitempty"`
 }
 
 type Summary struct {

@@ -35,6 +35,9 @@ règle d'entrée de cette interface décide.
   on ne conclut pas sur les règles.
 - `UNEXPECTED_ALLOW` : joignable alors que `policy.yaml` dit deny (trou de sécu).
 - `UNEXPECTED_DENY` : bloqué alors que `policy.yaml` dit allow (cassé).
+- **Colonne Internet** : ping vers `1.1.1.1` / `8.8.8.8` depuis chaque VLAN, en
+  sortant par sa passerelle. `internet: deny` sur un VLAN (caméras, IoT…)
+  doit donner `BLOCKED` ; si ça répond, c'est `UNEXPECTED_ALLOW`.
 
 > **Limite v1** : viser `.254` teste la règle d'entrée d'OPNsense, pas un vrai
 > flux forwardé vers un hôte, et pas les ports. Pour valider un vrai
@@ -166,6 +169,13 @@ targets:
   mode: gateway        # gateway | hosts
   hosts: {}            # hosts: {vlan10: 192.168.10.10, ...}
 
+internet:
+  enabled: true
+  targets: ["1.1.1.1", "8.8.8.8"]
+  default: allow       # attente par défaut, "allow", "deny" ou ""
+  # par VLAN, dans la liste vlans :
+  #   - {..., internet: deny}
+
 policy:
   default: allow
   rules:
@@ -197,6 +207,33 @@ targets:
 Chaque hôte doit répondre à l'ICMP et être distinct du LXC. Le LXC ne peut pas
 être sa propre cible : le kernel livre en local avant de router, donc la voie
 retour serait court-circuitée.
+
+## Accès Internet par VLAN
+
+Pour vérifier qu'un VLAN est bien coupé d'Internet (caméras, IoT, invités…) :
+
+```yaml
+internet:
+  enabled: true
+  targets: ["1.1.1.1", "8.8.8.8"]
+  default: allow
+
+vlans:
+  - {name: vlan10, ..., internet: allow}
+  - {name: cameras, ..., internet: deny}
+```
+
+- Chaque VLAN ping les cibles **en sortant par sa propre passerelle** (donc via
+  OPNsense et le WAN).
+- Joignable si **au moins une** cible répond → `OK` ; aucune → `BLOCKED`
+  (`REJECTED` si ICMP admin prohibited).
+- `deny` + joignable → `UNEXPECTED_ALLOW` (le blocage Internet ne marche pas).
+- `allow` + bloqué → `UNEXPECTED_DENY` (cassé).
+- L'historique est disponible sur la cellule `vlan → internet`.
+
+Limite : c'est un test ICMP. Si ta règle bloque seulement le TCP/443 mais
+laisse passer l'ICMP, le dashboard dira `OK` à juste titre. Pour tester un port
+précis, il faudra un test TCP (pas encore implémenté).
 
 ## CLI
 
@@ -243,7 +280,8 @@ sweep #1  2026-11-06T18:50:15Z  9 cells  0 violation(s)
 ## Métriques
 
 ```
-vlanmesh_probe_success{src,dst}              0/1
+vlanmesh_probe_success{src,dst}              0/1   (dst="internet" pour le WAN)
+vlanmesh_internet_success{src}               0/1
 vlanmesh_probe_loss_ratio{src,dst}           0..1
 vlanmesh_probe_rtt_ms{src,dst,stat}          stat=min|avg|max
 vlanmesh_probe_status{src,dst,status}        1 pour le statut courant

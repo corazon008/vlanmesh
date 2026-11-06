@@ -89,3 +89,50 @@ func TestVLANHelpers(t *testing.T) {
 		t.Errorf("Subnet=%q", got)
 	}
 }
+
+func TestInternetExpected(t *testing.T) {
+	c := validConfig()
+	c.Internet = Internet{Enabled: true, Targets: []string{"1.1.1.1", "8.8.8.8"}, Default: "allow"}
+	c.VLANS[0].Internet = "deny"
+	c.applyDefaults()
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := c.InternetExpected("vlan10"); !ok || got != "deny" {
+		t.Errorf("vlan10: got %q ok=%v, want deny", got, ok)
+	}
+	if got, ok := c.InternetExpected("vlan20"); !ok || got != "allow" {
+		t.Errorf("vlan20: got %q ok=%v, want allow", got, ok)
+	}
+}
+
+func TestInternetDefaults(t *testing.T) {
+	c := validConfig()
+	c.Internet = Internet{Enabled: true}
+	c.applyDefaults()
+	if len(c.Internet.Targets) == 0 {
+		t.Fatal("default internet targets should be filled")
+	}
+	if c.Internet.Default != "allow" {
+		t.Errorf("default=%q, want allow", c.Internet.Default)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInternetValidation(t *testing.T) {
+	c := validConfig()
+	c.Internet = Internet{Enabled: true, Targets: []string{"not-an-ip"}}
+	c.applyDefaults()
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected invalid internet target to be rejected")
+	}
+
+	c2 := validConfig()
+	c2.VLANS[0].Internet = "maybe"
+	c2.applyDefaults()
+	if err := c2.Validate(); err == nil {
+		t.Fatal("expected invalid per-VLAN internet action to be rejected")
+	}
+}

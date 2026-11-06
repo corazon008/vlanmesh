@@ -85,10 +85,11 @@ func (m *Monitor) Run(ctx context.Context) {
 }
 
 type job struct {
-	src     config.VLAN
-	dst     config.VLAN
-	dstIP   string
-	control bool
+	src      config.VLAN
+	dstName  string
+	dstIP    string
+	control  bool
+	internet bool
 }
 
 func (m *Monitor) Sweep(ctx context.Context) {
@@ -116,13 +117,16 @@ func (m *Monitor) Sweep(ctx context.Context) {
 
 			j := jobs[idx]
 			var r model.Result
-			if m.cfg.Demo {
+			switch {
+			case m.cfg.Demo:
 				r = m.demoResult(j)
-			} else {
+			case j.internet:
+				r = m.probeInternet(j.src)
+			default:
 				r = probe.Probe(j.src.SrcIP(), j.src.Iface, j.dstIP, m.cfg.Count, m.cfg.Timeout.D())
 			}
 			r.Src = j.src.Name
-			r.Dst = j.dst.Name
+			r.Dst = j.dstName
 			if r.SrcIP == "" {
 				r.SrcIP = j.src.SrcIP()
 			}
@@ -146,7 +150,12 @@ func (m *Monitor) Sweep(ctx context.Context) {
 	for i, j := range jobs {
 		c := model.Cell{Result: results[i], CheckedAt: now}
 		if !j.control {
-			exp, _ := m.cfg.Policy.Expected(j.src.Name, j.dst.Name)
+			var exp string
+			if j.internet {
+				exp, _ = m.cfg.InternetExpected(j.src.Name)
+			} else {
+				exp, _ = m.cfg.Policy.Expected(j.src.Name, j.dstName)
+			}
 			c.Expected = exp
 
 			if !controls[j.src.Name] {
@@ -181,22 +190,132 @@ func (m *Monitor) Sweep(ctx context.Context) {
 
 func (m *Monitor) buildJobs() []job {
 	vlans := m.cfg.VLANS
-	jobs := make([]job, 0, len(vlans)*len(vlans))
+	total := len(vlans) * len(vlans)
+	if m.cfg.Internet.Enabled {
+		total += len(vlans)
+	}
+	jobs := make([]job, 0, total)
 	for i := range vlans {
+		src := vlans[i]
+		// Control probe: own gateway, on-link, never crosses the firewall.
+		jobs = append(jobs, job{src: src, dstName: src.Name, dstIP: src.Gateway, control: true})
 		for j := range vlans {
-			src := vlans[i]
-			dst := vlans[j]
-			jb := job{src: src, dst: dst, control: i == j}
 			if i == j {
-				// Control probe: own gateway, on-link, never crosses the firewall.
-				jb.dstIP = src.Gateway
-			} else {
-				jb.dstIP = m.cfg.Targets.For(dst)
+				continue
 			}
-			jobs = append(jobs, jb)
+			dst := vlans[j]
+			jobs = append(jobs, job{src: src, dstName: dst.Name, dstIP: m.cfg.Targets.For(dst)})
+		}
+		if m.cfg.Internet.Enabled {
+			jobs = append(jobs, job{src: src, dstName: model.InternetDst, internet: true})
 		}
 	}
 	return jobs
+}
+
+// probeInternet checks reachability of the public targets from one VLAN.
+// Reachable if at least one target answers; blocked if none does.
+func (m *Monitor) probeInternet(src config.VLAN) model.Result {
+	targets := m.cfg.InternetTargets()
+	agg := model.Result{
+		Src:     src.Name,
+		Dst:     model.InternetDst,
+		SrcIP:   src.SrcIP(),
+		Started: time.Now(),
+	}
+	if len(targets) == 0 {
+		agg.Status = model.StatusError
+		agg.Err = "no internet target configured"
+		return agg
+	}
+
+	var (
+		reachable   int
+		errCount    int
+		rejected    bool
+		unreachable bool
+		firstErr    string
+		icmpType    int
+		icmpCode    int
+		bestIP      string
+		rttSum      float64
+		rttMin      float64
+		rttMax      float64
+		haveRTT     bool
+	)
+
+	for _, target := range targets {
+		r := probe.Probe(src.SrcIP(), src.Iface, target, m.cfg.Count, m.cfg.Timeout.D())
+		agg.Sent += r.Sent
+		agg.Recv += r.Recv
+		if r.Status == model.StatusError {
+			errCount++
+		}
+		if r.Status.Reachable() {
+			reachable++
+			if bestIP == "" {
+				bestIP = target
+			}
+			rttSum += r.RTTAvg
+			if !haveRTT || r.RTTMin < rttMin {
+				rttMin = r.RTTMin
+			}
+			if !haveRTT || r.RTTMax > rttMax {
+				rttMax = r.RTTMax
+			}
+			haveRTT = true
+		}
+		if r.Err != "" && firstErr == "" {
+			firstErr = target + ": " + r.Err
+		}
+		if r.Status == model.StatusRejected {
+			rejected = true
+			if icmpType == 0 {
+				icmpType, icmpCode = r.ICMPType, r.ICMPCode
+			}
+		}
+		if r.Status == model.StatusUnreachable {
+			unreachable = true
+			if icmpType == 0 {
+				icmpType, icmpCode = r.ICMPType, r.ICMPCode
+			}
+		}
+	}
+
+	if agg.Sent > 0 {
+		agg.Loss = 1 - float64(agg.Recv)/float64(agg.Sent)
+	}
+	agg.ICMPType, agg.ICMPCode = icmpType, icmpCode
+
+	switch {
+	case errCount == len(targets):
+		agg.Status = model.StatusError
+		agg.Err = firstErr
+	case reachable > 0:
+		agg.DstIP = bestIP
+		agg.RTTMin, agg.RTTMax = rttMin, rttMax
+		agg.RTTAvg = rttSum / float64(reachable)
+		if reachable == len(targets) {
+			agg.Status = model.StatusOK
+		} else {
+			agg.Status = model.StatusDegraded
+			agg.Err = firstErr
+		}
+	default:
+		agg.DstIP = targets[0]
+		agg.Err = firstErr
+		switch {
+		case rejected:
+			agg.Status = model.StatusRejected
+		case unreachable:
+			agg.Status = model.StatusUnreachable
+		default:
+			agg.Status = model.StatusTimeout
+		}
+	}
+
+	agg.Duration = float64(time.Since(agg.Started).Microseconds()) / 1000
+	return agg
 }
 
 // commit swaps the in-memory state and returns the cells whose status changed.
@@ -231,6 +350,9 @@ func (m *Monitor) updateMetrics(cells []model.Cell, dur time.Duration) {
 			v = 1
 		}
 		metrics.ProbeSuccess.WithLabelValues(c.Src, c.Dst).Set(v)
+		if c.Dst == model.InternetDst {
+			metrics.InternetSuccess.WithLabelValues(c.Src).Set(v)
+		}
 		metrics.ProbeLoss.WithLabelValues(c.Src, c.Dst).Set(c.Loss)
 		metrics.ProbeRTT.WithLabelValues(c.Src, c.Dst, "min").Set(c.RTTMin)
 		metrics.ProbeRTT.WithLabelValues(c.Src, c.Dst, "avg").Set(c.RTTAvg)
@@ -303,6 +425,12 @@ func (m *Monitor) Snapshot() model.Snapshot {
 	for i, v := range m.cfg.VLANS {
 		order[v.Name] = i
 	}
+	dstOrder := func(name string) int {
+		if name == model.InternetDst {
+			return len(m.cfg.VLANS)
+		}
+		return order[name]
+	}
 
 	cells := make([]model.Cell, 0, len(m.cells))
 	for _, c := range m.cells {
@@ -313,7 +441,7 @@ func (m *Monitor) Snapshot() model.Snapshot {
 		if oi != oj {
 			return oi < oj
 		}
-		return order[cells[i].Dst] < order[cells[j].Dst]
+		return dstOrder(cells[i].Dst) < dstOrder(cells[j].Dst)
 	})
 
 	sum := model.Summary{Sweeps: m.sweeps}
@@ -339,12 +467,13 @@ func (m *Monitor) Snapshot() model.Snapshot {
 	vlans := make([]model.VLANInfo, 0, len(m.cfg.VLANS))
 	for _, v := range m.cfg.VLANS {
 		vlans = append(vlans, model.VLANInfo{
-			Name:    v.Name,
-			VLANID:  v.VLANID,
-			Iface:   v.Iface,
-			Src:     v.Src,
-			Gateway: v.Gateway,
-			Target:  m.cfg.Targets.For(v),
+			Name:     v.Name,
+			VLANID:   v.VLANID,
+			Iface:    v.Iface,
+			Src:      v.Src,
+			Gateway:  v.Gateway,
+			Target:   m.cfg.Targets.For(v),
+			Internet: v.Internet,
 		})
 	}
 
@@ -358,11 +487,16 @@ func (m *Monitor) Snapshot() model.Snapshot {
 		Interval:    m.cfg.Interval.D().String(),
 		Demo:        m.cfg.Demo,
 		TargetsMode: m.cfg.Targets.Mode,
-		Vlans:       vlans,
-		Policy:      pol,
-		Cells:       cells,
-		Summary:     sum,
-		Issues:      m.issues,
+		Internet: model.InternetInfo{
+			Enabled: m.cfg.Internet.Enabled,
+			Targets: m.cfg.Internet.Targets,
+			Default: m.cfg.Internet.Default,
+		},
+		Vlans:   vlans,
+		Policy:  pol,
+		Cells:   cells,
+		Summary: sum,
+		Issues:  m.issues,
 	}
 }
 
@@ -375,18 +509,28 @@ func (m *Monitor) demoResult(j job) model.Result {
 		DstIP:   j.dstIP,
 		Sent:    m.cfg.Count,
 	}
+	if j.internet {
+		targets := m.cfg.InternetTargets()
+		r.Sent = m.cfg.Count * len(targets)
+		if len(targets) > 0 {
+			r.DstIP = targets[0]
+		}
+	}
 	roll := rand.Float64()
 	lat := 0.25 + rand.Float64()*1.8
 
 	if j.control {
 		r.Status = model.StatusOK
-		r.Recv = r.Sent
+		r.Recv = m.cfg.Count
 		r.RTTMin, r.RTTMax, r.RTTAvg = lat, lat+0.2, lat+0.1
 		r.Duration = r.RTTAvg
 		return r
 	}
 
-	exp, _ := m.cfg.Policy.Expected(j.src.Name, j.dst.Name)
+	exp, _ := m.cfg.Policy.Expected(j.src.Name, j.dstName)
+	if j.internet {
+		exp, _ = m.cfg.InternetExpected(j.src.Name)
+	}
 	allowed := exp != "deny"
 
 	if allowed {

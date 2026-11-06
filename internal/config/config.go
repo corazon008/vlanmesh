@@ -43,16 +43,26 @@ type Config struct {
 	Demo        bool     `yaml:"demo"`
 	VLANS       []VLAN   `yaml:"vlans"`
 	Targets     Targets  `yaml:"targets"`
+	Internet    Internet `yaml:"internet"`
 	Policy      Policy   `yaml:"policy"`
 	Alerts      Alerts   `yaml:"alerts"`
 }
 
+type Internet struct {
+	Enabled bool     `yaml:"enabled" json:"enabled"`
+	Targets []string `yaml:"targets" json:"targets"`
+	// Default expectation for VLANs without an explicit `internet:` field.
+	// "allow", "deny" or "" (no expectation).
+	Default string `yaml:"default" json:"default"`
+}
+
 type VLAN struct {
-	Name    string `yaml:"name" json:"name"`
-	VLANID  int    `yaml:"vlan_id" json:"vlan_id"`
-	Iface   string `yaml:"iface" json:"iface"`
-	Src     string `yaml:"src" json:"src"`
-	Gateway string `yaml:"gateway" json:"gateway"`
+	Name     string `yaml:"name" json:"name"`
+	VLANID   int    `yaml:"vlan_id" json:"vlan_id"`
+	Iface    string `yaml:"iface" json:"iface"`
+	Src      string `yaml:"src" json:"src"`
+	Gateway  string `yaml:"gateway" json:"gateway"`
+	Internet string `yaml:"internet" json:"internet"`
 }
 
 func (v VLAN) SrcIP() string {
@@ -85,6 +95,23 @@ func (t Targets) For(src VLAN) string {
 		}
 	}
 	return src.Gateway
+}
+
+// InternetTargets returns the public IPs probed from every VLAN.
+func (c *Config) InternetTargets() []string { return c.Internet.Targets }
+
+// InternetExpected returns the intended Internet access for a VLAN:
+// the per-VLAN `internet:` override first, then internet.default.
+func (c *Config) InternetExpected(vlanName string) (string, bool) {
+	for _, v := range c.VLANS {
+		if v.Name == vlanName && v.Internet != "" {
+			return v.Internet, true
+		}
+	}
+	if c.Internet.Default == "allow" || c.Internet.Default == "deny" {
+		return c.Internet.Default, true
+	}
+	return "", false
 }
 
 type Policy struct {
@@ -162,6 +189,14 @@ func (c *Config) applyDefaults() {
 	if c.Targets.Hosts == nil {
 		c.Targets.Hosts = map[string]string{}
 	}
+	if c.Internet.Enabled {
+		if len(c.Internet.Targets) == 0 {
+			c.Internet.Targets = []string{"1.1.1.1", "8.8.8.8"}
+		}
+		if c.Internet.Default == "" {
+			c.Internet.Default = "allow"
+		}
+	}
 }
 
 func (c *Config) Validate() error {
@@ -182,6 +217,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Policy.Default != "" && c.Policy.Default != "allow" && c.Policy.Default != "deny" {
 		return fmt.Errorf("policy.default must be \"allow\", \"deny\" or empty")
+	}
+	if c.Internet.Default != "" && c.Internet.Default != "allow" && c.Internet.Default != "deny" {
+		return fmt.Errorf("internet.default must be \"allow\", \"deny\" or empty")
+	}
+	for i, t := range c.Internet.Targets {
+		if net.ParseIP(t) == nil {
+			return fmt.Errorf("internet.targets[%d]: invalid IP %q", i, t)
+		}
+	}
+	if c.Internet.Enabled && len(c.Internet.Targets) == 0 {
+		return fmt.Errorf("internet.targets: at least one target is required when internet.enabled is true")
 	}
 	for i, r := range c.Policy.Rules {
 		if r.Action != "allow" && r.Action != "deny" {
@@ -213,6 +259,9 @@ func (c *Config) Validate() error {
 		}
 		if v.Gateway == "" {
 			return fmt.Errorf("vlans[%d] (%s): gateway is required", i, v.Name)
+		}
+		if v.Internet != "" && v.Internet != "allow" && v.Internet != "deny" {
+			return fmt.Errorf("vlans[%d] (%s): internet must be \"allow\", \"deny\" or empty", i, v.Name)
 		}
 		gw := net.ParseIP(v.Gateway)
 		if gw == nil {
