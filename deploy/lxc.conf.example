@@ -1,0 +1,19 @@
+# Exemple de configuration LXC Proxmox (/etc/pve/lxc/<id>.conf)
+#
+# - eth0 : management (une seule passerelle par défaut)
+# - eth1..eth8 : une patte par VLAN, en /24, SANS gw
+# - nesting + keyctl pour Docker
+#
+# Adapter les VLAN IDs, subnets, adresses IP et hwaddr.
+
+features: nesting=1,keyctl=1
+
+net0: name=eth0,bridge=vmbr0,tag=99,ip=192.168.99.5/24,gw=192.168.99.254,hwaddr=AA:BB:CC:00:00:01
+net1: name=eth1,bridge=vmbr0,tag=10,ip=192.168.10.5/24,hwaddr=AA:BB:CC:00:00:02
+net2: name=eth2,bridge=vmbr0,tag=20,ip=192.168.20.5/24,hwaddr=AA:BB:CC:00:00:03
+net3: name=eth3,bridge=vmbr0,tag=30,ip=192.168.30.5/24,hwaddr=AA:BB:CC:00:00:04
+net4: name=eth4,bridge=vmbr0,tag=40,ip=192.168.40.5/24,hwaddr=AA:BB:CC:00:00:05
+net5: name=eth5,bridge=vmbr0,tag=50,ip=192.168.50.5/24,hwaddr=AA:BB:CC:00:00:06
+net6: name=eth6,bridge=vmbr0,tag=60,ip=192.168.60.5/24,hwaddr=AA:BB:CC:00:00:07
+net7: name=eth7,bridge=vmbr0,tag=70,ip=192.168.70.5/24,hwaddr=AA:BB:CC:00:00:08
+net8: name=eth8,bridge=vmbr0,tag=80,ip=192.168.80.5/24,hwaddr=AA:BB:CC:00:00:09

@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vlanmesh — matrice de connectivité VLAN</title>
+<style>
+:root{
+  --bg:#0a0e13; --panel:#101820; --panel2:#0c131a; --line:#1c2836; --line2:#243447;
+  --text:#e6edf3; --muted:#8b9bb0; --accent:#38bdf8;
+  --ok:#22c55e; --warn:#eab308; --bad:#ef4444; --orange:#f97316;
+  --unknown:#64748b; --error:#a855f7;
+  --radius:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{padding:18px 22px 40px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;background:#0d1620;border:1px solid var(--line);padding:1px 5px;border-radius:5px}
+
+header.top{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:14px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand h1{font-size:19px;margin:0;letter-spacing:.3px;font-weight:650}
+.logo{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:linear-gradient(135deg,#0ea5e9,#6366f1);color:#fff;font-size:14px}
+.tag{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line2);color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.tag.demo{border-color:#92400e;background:#451a03;color:#fbbf24}
+.pills{display:flex;gap:8px;flex-wrap:wrap;flex:1}
+.pill{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-size:12px;color:var(--muted)}
+.pill b{color:var(--text);font-variant-numeric:tabular-nums}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--unknown)}
+.meta{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:12px}
+button{background:var(--panel);color:var(--text);border:1px solid var(--line2);padding:6px 12px;border-radius:8px;cursor:pointer;font:inherit;font-size:12px}
+button:hover{border-color:#36506a;background:#132030}
+label.chk{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+
+.issues{display:none;margin-bottom:14px;border:1px solid #7c2d12;background:#2a1207;border-radius:var(--radius);padding:10px 14px;color:#fdba74;font-size:12.5px}
+.issues.show{display:block}
+.issues b{color:#fed7aa}
+.issues ul{margin:6px 0 0;padding-left:18px}
+.issues li{margin:2px 0}
+
+main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:18px;align-items:start}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.card-h{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+.scroll{overflow:auto;max-height:calc(100vh - 240px);padding:10px}
+table.matrix{border-collapse:separate;border-spacing:4px;width:100%}
+table.matrix th{font-weight:500;color:var(--muted);font-size:11px;padding:4px 6px;white-space:nowrap}
+table.matrix thead th{position:sticky;top:0;background:var(--panel);z-index:3}
+table.matrix th.corner{left:0;z-index:4;background:var(--panel)}
+table.matrix th.rowh{position:sticky;left:0;background:var(--panel);text-align:left;z-index:2;min-width:118px}
+table.matrix th .nm{display:block;color:var(--text);font-size:12px;font-weight:600}
+table.matrix th .sub{display:block;color:#5f7185;font-size:10px;font-family:ui-monospace,Menlo,monospace}
+td.cell{min-width:86px;text-align:center;padding:8px 6px;border-radius:8px;border:1px solid transparent;cursor:pointer;transition:transform .06s ease,filter .1s ease;position:relative}
+td.cell:hover{filter:brightness(1.25)}
+td.cell.self{outline:1px dashed #2b3a4b;outline-offset:-3px}
+td.cell .lat{font-size:15px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:.2px}
+td.cell .unit{font-size:9.5px;opacity:.7;letter-spacing:.4px;text-transform:uppercase}
+td.cell .st{font-size:11.5px;font-weight:600;letter-spacing:.2px}
+td.cell.selected{box-shadow:inset 0 0 0 2px var(--accent)}
+td.cell .warn{position:absolute;top:2px;right:5px;font-size:10px}
+.s-ok{background:rgba(34,197,94,.14);color:#4ade80}
+.s-degraded{background:rgba(234,179,8,.15);color:#facc15}
+.s-rejected{background:rgba(239,68,68,.20);color:#fca5a5}
+.s-unreachable{background:rgba(249,115,22,.18);color:#fdba74}
+.s-timeout{background:rgba(153,27,27,.30);color:#fca5a5}
+.s-unknown{background:rgba(100,116,139,.16);color:#94a3b8}
+.s-error{background:rgba(168,85,247,.18);color:#d8b4fe}
+.v-allow{outline:2.5px solid var(--bad);outline-offset:-2.5px}
+.v-deny{outline:2.5px dashed var(--warn);outline-offset:-2.5px}
+td.cell.v-allow{box-shadow:0 0 0 1px rgba(239,68,68,.35), 0 0 14px rgba(239,68,68,.25)}
+td.cell.v-deny{box-shadow:0 0 0 1px rgba(234,179,8,.30), 0 0 14px rgba(234,179,8,.20)}
+
+aside.panel{position:sticky;top:14px;display:flex;flex-direction:column;gap:14px}
+.panel .body{padding:14px}
+.hint{color:var(--muted);font-size:12.5px;line-height:1.6}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:12.5px;margin:10px 0}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;font-family:ui-monospace,Menlo,monospace;font-size:12px;text-align:right}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:999px;font-size:12px;font-weight:600}
+.stat{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--muted)}
+.stat b{display:block;color:var(--text);font-size:17px;font-weight:650;font-variant-numeric:tabular-nums}
+.chart{margin-top:12px}
+.chart svg{width:100%;height:auto;display:block}
+.hist{margin-top:12px;font-size:11.5px}
+.hist table{width:100%;border-collapse:collapse}
+.hist th{color:var(--muted);font-weight:500;text-align:left;padding:3px 4px;border-bottom:1px solid var(--line)}
+.hist td{padding:3px 4px;border-bottom:1px solid #131d28;font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+.hist td.err{color:#f87171;max-width:150px;overflow:hidden;text-overflow:ellipsis}
+
+.legend{display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:11px;color:var(--muted);padding:8px 14px;border-top:1px solid var(--line)}
+.legend .item{display:flex;align-items:center;gap:5px}
+.legend .sw{width:10px;height:10px;border-radius:3px}
+
+details.policy{margin-top:18px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:10px 14px}
+details.policy summary{cursor:pointer;color:var(--muted);font-size:12.5px}
+.policy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px;margin-top:10px;font-size:12px}
+.policy-row{display:flex;justify-content:space-between;gap:8px;padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)}
+.allow{color:#4ade80}.deny{color:#f87171}
+footer{margin-top:18px;color:#5f7185;font-size:11px;display:flex;gap:14px;flex-wrap:wrap}
+.empty{color:var(--muted);font-size:12px;padding:18px 0;text-align:center}
+@media (max-width:1100px){main{grid-template-columns:1fr}aside.panel{position:static}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="logo">◈</div>
+    <h1>vlanmesh</h1>
+    <span class="tag" id="modeTag">—</span>
+  </div>
+  <div class="pills" id="summary"></div>
+  <div class="meta">
+    <span id="lastSweep">—</span>
+    <button id="refreshBtn" title="Forcer un rafraîchissement">Rafraîchir</button>
+    <label class="chk"><input type="checkbox" id="autoChk" checked> auto</label>
+  </div>
+</header>
+
+<div class="issues" id="issues"></div>
+
+<main>
+  <section class="card">
+    <div class="card-h">
+      <span>Matrice dirigée <span style="color:#5f7185">ligne = source · colonne = destination</span></span>
+      <span id="matrixMeta"></span>
+    </div>
+    <div class="scroll"><table class="matrix" id="matrix"></table></div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <aside class="panel">
+    <section class="card">
+      <div class="card-h"><span>Détail</span><span id="selMeta"></span></div>
+      <div class="body" id="detail">
+        <div class="hint">Clique une cellule de la matrice pour voir l'historique, la latence et le verdict de politique.</div>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<details class="policy">
+  <summary>Politique attendue</summary>
+  <div class="policy-grid" id="policy"></div>
+</details>
+
+<footer>
+  <span>vlanmesh</span>
+  <span id="footMeta"></span>
+  <a href="/metrics" target="_blank" rel="noopener">/metrics</a>
+  <a href="/api/health" target="_blank" rel="noopener">/api/health</a>
+</footer>
+
+<script>
+const LABELS = {ok:'OK',degraded:'Dégradé',rejected:'Rejeté',unreachable:'Injoignable',timeout:'Bloqué',unknown:'Inconnu',error:'Erreur'};
+const SHORT  = {ok:'OK',degraded:'Dégradé',rejected:'Rejet',unreachable:'Injoig.',timeout:'Bloqué',unknown:'?',error:'Err'};
+const COLOR  = {ok:'#22c55e',degraded:'#eab308',rejected:'#ef4444',unreachable:'#f97316',timeout:'#991b1b',unknown:'#64748b',error:'#a855f7'};
+
+const state = {data:null, selected:null, auto:true, matrixKey:null, cells:new Map(), lastError:null};
+
+function el(id){return document.getElementById(id)}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmtMs(v){ if(!v||v<=0) return null; return v<10 ? v.toFixed(2) : v.toFixed(1); }
+function relTime(iso){
+  if(!iso) return '—';
+  const d=(Date.now()-new Date(iso).getTime())/1000;
+  if(d<2) return "à l'instant";
+  if(d<60) return 'il y a '+Math.round(d)+' s';
+  if(d<3600) return 'il y a '+Math.round(d/60)+' min';
+  return new Date(iso).toLocaleTimeString('fr-FR');
+}
+
+async function load(){
+  try{
+    const r=await fetch('/api/matrix',{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    state.data=await r.json();
+    state.lastError=null;
+    render();
+    if(!state.hashDone){
+      state.hashDone=true;
+      const h=decodeURIComponent(location.hash.replace(/^#/,''));
+      if(h.includes('|')){
+        const [s,d]=h.split('|');
+        const known=(state.data.vlans||[]).some(v=>v.name===s)&&(state.data.vlans||[]).some(v=>v.name===d);
+        if(known) state.selected={src:s,dst:d};
+      }
+    }
+    if(state.selected) await loadHistory(state.selected.src,state.selected.dst);
+  }catch(e){
+    state.lastError=e.message||String(e);
+    renderIssues();
+  }
+}
+
+function render(){
+  const d=state.data;
+  if(!d) return;
+
+  el('modeTag').textContent = d.demo ? 'démo' : 'live';
+  el('modeTag').className = 'tag'+(d.demo?' demo':'');
+  el('footMeta').textContent = d.vlans.length+' VLANs · cible '+(d.targets_mode==='hosts'?'hôtes':'passerelles .254')+' · intervalle '+d.interval;
+
+  renderSummary(d);
+  renderIssues();
+  renderMatrix(d);
+  renderPolicy(d);
+}
+
+function renderSummary(d){
+  const s=d.summary;
+  const items=[
+    ['ok','OK',s.ok],
+    ['degraded','Dégradés',s.degraded],
+    ['timeout','Bloqués',s.blocked],
+    ['unknown','Inconnus',s.unknown],
+    ['rejected','Violations',s.violations],
+  ];
+  el('summary').innerHTML = items.map(([k,label,n])=>
+    `<span class="pill"><span class="dot" style="background:${COLOR[k]}"></span>${label} <b>${n}</b></span>`
+  ).join('');
+  el('lastSweep').textContent = 'maj '+relTime(s.last_sweep);
+  el('matrixMeta').textContent = s.sweeps ? 'sweep #'+s.sweeps : 'en attente';
+}
+
+function renderIssues(){
+  const box=el('issues');
+  const issues=(state.data&&state.data.issues)||[];
+  const errs=[];
+  if(state.lastError) errs.push('API injoignable : '+state.lastError);
+  const all=[...errs,...issues];
+  if(!all.length){box.className='issues';box.innerHTML='';return}
+  box.className='issues show';
+  box.innerHTML='<b>'+(errs.length?'Erreur API':'Points à corriger côté réseau')+'</b><ul>'+all.map(i=>'<li>'+esc(i)+'</li>').join('')+'</ul>';
+}
+
+function buildMatrix(d){
+  const t=el('matrix');
+  t.innerHTML='';
+  state.cells.clear();
+  const head=document.createElement('thead');
+  const hr=document.createElement('tr');
+  const corner=document.createElement('th');
+  corner.className='corner';
+  corner.textContent='src \\ dst';
+  hr.appendChild(corner);
+  for(const v of d.vlans){
+    const th=document.createElement('th');
+    th.innerHTML='<span class="nm">'+esc(v.name)+'</span><span class="sub">'+esc(v.target||v.gateway)+'</span>';
+    th.title=v.name+' — '+v.src+' — iface '+v.iface;
+    hr.appendChild(th);
+  }
+  head.appendChild(hr); t.appendChild(head);
+
+  const body=document.createElement('tbody');
+  for(const src of d.vlans){
+    const tr=document.createElement('tr');
+    const th=document.createElement('th');
+    th.className='rowh';
+    th.innerHTML='<span class="nm">'+esc(src.name)+'</span><span class="sub">'+esc(src.iface)+' · '+esc(src.src)+'</span>';
+    tr.appendChild(th);
+    for(const dst of d.vlans){
+      const td=document.createElement('td');
+      td.className='cell s-unknown';
+      td.dataset.src=src.name; td.dataset.dst=dst.name;
+      if(src.name===dst.name) td.classList.add('self');
+      td.addEventListener('click',()=>selectCell(src.name,dst.name));
+      state.cells.set(src.name+'|'+dst.name,td);
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+  t.appendChild(body);
+  state.matrixKey=d.vlans.map(v=>v.name).join('|');
+}
+
+function renderMatrix(d){
+  const key=d.vlans.map(v=>v.name).join('|');
+  if(state.matrixKey!==key) buildMatrix(d);
+
+  const byKey=new Map();
+  for(const c of d.cells) byKey.set(c.src+'|'+c.dst,c);
+
+  for(const [k,td] of state.cells){
+    const c=byKey.get(k);
+    td.className='cell';
+    if(k.split('|')[0]===k.split('|')[1]) td.classList.add('self');
+    if(!c){
+      td.classList.add('s-unknown'); td.innerHTML='<div class="st">…</div>';
+      td.title=k.replace('|',' → ')+' : pas encore de mesure';
+      continue;
+    }
+    td.classList.add('s-'+c.status);
+    if(c.violation==='unexpected_allow') td.classList.add('v-allow');
+    if(c.violation==='unexpected_deny') td.classList.add('v-deny');
+    if(state.selected && state.selected.src===c.src && state.selected.dst===c.dst) td.classList.add('selected');
+
+    const ms=fmtMs(c.rtt_avg_ms);
+    const self=c.src===c.dst;
+    let inner;
+    if(ms) inner='<div class="lat">'+ms+'</div><div class="unit">ms</div>';
+    else inner='<div class="st">'+esc(SHORT[c.status]||c.status)+'</div>';
+    if(c.violation) inner+='<span class="warn" title="'+esc(c.violation)+'">⚠</span>';
+    td.innerHTML=inner;
+    td.title=[
+      c.src+' → '+c.dst,
+      self?'contrôle : passerelle du VLAN (on-link)':'',
+      'statut: '+(LABELS[c.status]||c.status),
+      'perte: '+Math.round((c.loss||0)*100)+'%  ('+(c.recv||0)+'/'+(c.sent||0)+')',
+      ms ? 'rtt: '+ms+' ms' : '',
+      c.expected ? 'attendu: '+(c.expected==='allow'?'allow':'deny') : '',
+      c.violation ? '⚠ '+c.violation : '',
+      c.error ? 'erreur: '+c.error : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  // Si la sélection n'existe plus, on nettoie.
+  if(state.selected && !(byKey.get(state.selected.src+'|'+state.selected.dst))){
+    // garder la sélection quand même (elle peut revenir au sweep suivant)
+  }
+}
+
+function renderPolicy(d){
+  const box=el('policy'); const p=d.policy||{};
+  const rows=[];
+  if(p.default) rows.push(`<div class="policy-row"><span>défaut</span><span class="${p.default}">${p.default}</span></div>`);
+  for(const r of (p.rules||[])) rows.push(`<div class="policy-row"><span>${esc(r.from)} → ${esc(r.to)}</span><span class="${r.action}">${r.action}</span></div>`);
+  box.innerHTML=rows.join('')||'<div class="hint">Aucune politique déclarée.</div>';
+
+  const legend=[
+    ['s-ok','OK'],['s-degraded','Dégradé'],['s-rejected','Rejeté'],['s-unreachable','Injoignable'],['s-timeout','Bloqué'],['s-unknown','Inconnu']
+  ];
+  el('legend').innerHTML=legend.map(([cls,label])=>
+    `<span class="item"><span class="sw ${cls}"></span>${label}</span>`
+  ).join('')+`<span class="item" style="margin-left:auto"><span class="sw" style="background:transparent;outline:2.5px solid var(--bad);outline-offset:-2.5px"></span>allow attendu, bloqué</span>
+  <span class="item"><span class="sw" style="background:transparent;outline:2.5px dashed var(--warn);outline-offset:-2.5px"></span>deny attendu, joignable</span>`;
+}
+
+function selectCell(src,dst){
+  state.selected={src,dst};
+  try{history.replaceState(null,'','#'+encodeURIComponent(src)+'|'+encodeURIComponent(dst))}catch(e){}
+  for(const [k,td] of state.cells){
+    td.classList.toggle('selected', k===src+'|'+dst);
+  }
+  loadHistory(src,dst);
+}
+
+async function loadHistory(src,dst){
+  const panel=el('detail');
+  const cur=findCell(src,dst);
+  panel.innerHTML=renderDetailHeader(src,dst,cur)+'<div class="empty">chargement…</div>';
+  try{
+    const r=await fetch('/api/history?src='+encodeURIComponent(src)+'&dst='+encodeURIComponent(dst)+'&limit=240',{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const h=await r.json();
+    panel.innerHTML=renderDetailHeader(src,dst,cur)+chart(h.results||[])+histTable(h.results||[]);
+  }catch(e){
+    panel.innerHTML=renderDetailHeader(src,dst,cur)+'<div class="empty" style="color:#f87171">historique indisponible : '+esc(e.message)+'</div>';
+  }
+}
+
+function findCell(src,dst){
+  if(!state.data) return null;
+  return (state.data.cells||[]).find(c=>c.src===src&&c.dst===dst)||null;
+}
+
+function renderDetailHeader(src,dst,c){
+  el('selMeta').textContent=src+' → '+dst;
+  if(!c){
+    return `<div class="hint"><b>${esc(src)} → ${esc(dst)}</b><br>Aucune mesure pour cette cellule.</div>`;
+  }
+  const ms=fmtMs(c.rtt_avg_ms);
+  const badge=`<span class="badge s-${c.status}">${esc(LABELS[c.status]||c.status)}</span>`;
+  const viol=c.violation
+    ? `<div style="margin-top:8px;color:${c.violation==='unexpected_allow'?'#f87171':'#fbbf24'};font-size:12px">⚠ ${c.violation==='unexpected_allow'?'Trafic joignable alors que la politique dit deny':'Trafic bloqué alors que la politique dit allow'}</div>`
+    : (c.expected?`<div style="margin-top:8px;color:var(--muted);font-size:12px">Conforme à la politique (${c.expected})</div>`:'');
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <div><div style="font-size:15px;font-weight:650">${esc(src)} → ${esc(dst)}</div>
+      <div style="color:var(--muted);font-size:11.5px;font-family:ui-monospace,Menlo,monospace">${esc(c.src_ip||'')} → ${esc(c.dst_ip||'')}</div></div>
+      ${badge}
+    </div>${viol}
+    <div class="stat">
+      <div><b>${ms||'—'}</b><span>rtt moy. ms</span></div>
+      <div><b>${Math.round((c.loss||0)*100)}%</b><span>perte</span></div>
+      <div><b>${c.recv||0}/${c.sent||0}</b><span>réponses</span></div>
+      <div><b>${(c.icmp_type||0)?c.icmp_type+'/'+(c.icmp_code||0):'—'}</b><span>icmp</span></div>
+    </div>
+    <dl class="kv">
+      <dt>rtt min / max</dt><dd>${fmtMs(c.rtt_min_ms)||'—'} / ${fmtMs(c.rtt_max_ms)||'—'} ms</dd>
+      <dt>attendu</dt><dd>${esc(c.expected||'—')}</dd>
+      <dt>mesuré à</dt><dd>${esc(relTime(c.checked_at))}</dd>
+      ${c.error?`<dt>erreur</dt><dd style="color:#f87171;font-family:inherit;font-size:11.5px">${esc(c.error)}</dd>`:''}
+    </dl>`;
+}
+
+function chart(results){
+  if(!results.length) return '<div class="chart empty">Pas encore d\'historique.</div>';
+  const pts=results.slice().reverse();
+  const W=560,H=150,P=10;
+  let max=1;
+  for(const p of pts) if((p.rtt_max_ms||0)>max) max=p.rtt_max_ms;
+  const bw=Math.max(1,(W-2*P)/pts.length);
+  const plotH=H-2*P-14;
+  let bars='';
+  pts.forEach((p,i)=>{
+    const x=P+i*bw;
+    const reach=p.status==='ok'||p.status==='degraded';
+    const t=new Date(p.checked_at).toLocaleTimeString('fr-FR')+' · '+(LABELS[p.status]||p.status)+' · '+(p.rtt_avg_ms?p.rtt_avg_ms.toFixed(2)+' ms':'—');
+    if(reach){
+      const h=Math.max(2,((p.rtt_avg_ms||0)/max)*plotH);
+      bars+=`<rect x="${x.toFixed(1)}" y="${(H-P-14-h).toFixed(1)}" width="${Math.max(1.2,bw-1).toFixed(1)}" height="${h.toFixed(1)}" rx="1" fill="${COLOR[p.status]||COLOR.ok}" opacity=".9"><title>${esc(t)}</title></rect>`;
+    }else{
+      bars+=`<rect x="${x.toFixed(1)}" y="${(H-P-6).toFixed(1)}" width="${Math.max(1.2,bw-1).toFixed(1)}" height="6" rx="1" fill="${COLOR[p.status]||COLOR.timeout}" opacity=".9"><title>${esc(t)}</title></rect>`;
+    }
+  });
+  const grid=[0,.25,.5,.75,1].map(f=>{
+    const y=P+f*plotH;
+    return `<line x1="${P}" y1="${y.toFixed(1)}" x2="${W-P}" y2="${y.toFixed(1)}" stroke="#1c2836" stroke-width="1"/>`;
+  }).join('');
+  return `<div class="chart">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="historique rtt">
+      ${grid}${bars}
+      <text x="${P}" y="${P+9}" fill="#5f7185" font-size="10">${max.toFixed(1)} ms</text>
+      <text x="${P}" y="${H-1}" fill="#5f7185" font-size="10">-${pts.length} mesures</text>
+    </svg>
+  </div>`;
+}
+
+function histTable(results){
+  if(!results.length) return '';
+  const rows=results.slice(0,12).map(p=>{
+    const ms=fmtMs(p.rtt_avg_ms);
+    return `<tr>
+      <td>${new Date(p.checked_at).toLocaleTimeString('fr-FR')}</td>
+      <td style="color:${COLOR[p.status]||'#fff'}">${esc(LABELS[p.status]||p.status)}</td>
+      <td>${ms?ms+' ms':'—'}</td>
+      <td>${Math.round((p.loss||0)*100)}%</td>
+      <td class="err" title="${esc(p.error||'')}">${esc(p.error||'')}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="hist"><table><thead><tr><th>heure</th><th>statut</th><th>rtt</th><th>perte</th><th>erreur</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+el('refreshBtn').addEventListener('click',load);
+el('autoChk').addEventListener('change',e=>{state.auto=e.target.checked;schedule()});
+let timer=null;
+function schedule(){
+  if(timer){clearInterval(timer);timer=null}
+  if(state.auto) timer=setInterval(load,5000);
+}
+setInterval(()=>{ if(state.data) el('lastSweep').textContent='maj '+relTime(state.data.summary.last_sweep); },1000);
+
+load().then(schedule);
+</script>
+</body>
+</html>

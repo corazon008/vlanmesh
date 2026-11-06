@@ -1,0 +1,37 @@
+# Config de démonstration : aucune interface réseau requise.
+#   go run . -config config.demo.yaml
+# puis http://localhost:8080
+
+listen: ":8080"
+interval: 5s
+count: 3
+timeout: 1s
+concurrency: 8
+db: ./data/vlanmesh.db
+retention: 24h
+demo: true
+
+vlans:
+  - {name: vlan10, vlan_id: 10, iface: eth1, src: 192.168.10.5/24, gateway: 192.168.10.254}
+  - {name: vlan20, vlan_id: 20, iface: eth2, src: 192.168.20.5/24, gateway: 192.168.20.254}
+  - {name: vlan30, vlan_id: 30, iface: eth3, src: 192.168.30.5/24, gateway: 192.168.30.254}
+  - {name: vlan40, vlan_id: 40, iface: eth4, src: 192.168.40.5/24, gateway: 192.168.40.254}
+  - {name: vlan50, vlan_id: 50, iface: eth5, src: 192.168.50.5/24, gateway: 192.168.50.254}
+  - {name: vlan60, vlan_id: 60, iface: eth6, src: 192.168.60.5/24, gateway: 192.168.60.254}
+  - {name: vlan70, vlan_id: 70, iface: eth7, src: 192.168.70.5/24, gateway: 192.168.70.254}
+  - {name: vlan80, vlan_id: 80, iface: eth8, src: 192.168.80.5/24, gateway: 192.168.80.254}
+
+targets:
+  mode: gateway
+
+policy:
+  default: allow
+  rules:
+    - {from: vlan10, to: vlan20, action: deny}
+    - {from: vlan10, to: vlan30, action: deny}
+    - {from: vlan20, to: vlan10, action: deny}
+    - {from: vlan40, to: vlan50, action: deny}
+    - {from: vlan50, to: vlan60, action: deny}
+
+alerts:
+  webhook: ""

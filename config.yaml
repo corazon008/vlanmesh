@@ -1,0 +1,53 @@
+# vlanmesh — configuration
+#
+# Chaque VLAN = une patte du LXC. L'interface doit exister dans le conteneur
+# (eth1, eth2, ...) et porter l'IP indiquée par `src` avec le masque du VLAN.
+# La passerelle `gateway` est le .254 d'OPNsense pour ce VLAN.
+
+listen: ":8080"
+
+interval: 30s      # fréquence des sweeps
+count: 3           # paquets ICMP par cellule
+timeout: 1s        # attente des réponses
+concurrency: 8     # probes en parallèle
+
+db: /data/vlanmesh.db
+retention: 720h    # 30 jours d'historique
+
+# true = résultats simulés, aucune interface requise (démo UI).
+demo: false
+
+# EXEMPLE à adapter : remplace VLAN IDs, ifaces, sous-réseaux et IP.
+vlans:
+  - {name: vlan10, vlan_id: 10, iface: eth1, src: 192.168.10.5/24, gateway: 192.168.10.254}
+  - {name: vlan20, vlan_id: 20, iface: eth2, src: 192.168.20.5/24, gateway: 192.168.20.254}
+  - {name: vlan30, vlan_id: 30, iface: eth3, src: 192.168.30.5/24, gateway: 192.168.30.254}
+  - {name: vlan40, vlan_id: 40, iface: eth4, src: 192.168.40.5/24, gateway: 192.168.40.254}
+  - {name: vlan50, vlan_id: 50, iface: eth5, src: 192.168.50.5/24, gateway: 192.168.50.254}
+  - {name: vlan60, vlan_id: 60, iface: eth6, src: 192.168.60.5/24, gateway: 192.168.60.254}
+  - {name: vlan70, vlan_id: 70, iface: eth7, src: 192.168.70.5/24, gateway: 192.168.70.254}
+  - {name: vlan80, vlan_id: 80, iface: eth8, src: 192.168.80.5/24, gateway: 192.168.80.254}
+
+# Cible de chaque cellule :
+#   gateway = le .254 du VLAN (OPNsense lui-même, smoke test ingress)
+#   hosts   = un hôte dédié par VLAN (vrai test forward + ports)
+targets:
+  mode: gateway
+  hosts: {}
+  # hosts:
+  #   vlan10: 192.168.10.10
+  #   vlan20: 192.168.20.10
+
+# Politique attendue. Sert à détecter les écarts :
+#   allow attendu + bloqué  -> unexpected_deny  (cassé)
+#   deny  attendu + joignable -> unexpected_allow (trou de sécurité)
+# EXEMPLE à adapter à tes règles OPNsense.
+policy:
+  default: allow
+  rules:
+    - {from: vlan10, to: vlan20, action: deny}
+    - {from: vlan20, to: vlan10, action: deny}
+
+alerts:
+  # POST JSON à chaque changement d'état (ntfy, Gotify, Discord, ...).
+  webhook: ""
